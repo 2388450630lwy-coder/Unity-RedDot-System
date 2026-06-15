@@ -374,11 +374,11 @@ namespace RedDot
             return GetState(pathHash);
         }
 
-        /// <summary>清零动态子节点。</summary>
+        /// <summary>清零动态子节点（递归清理：静态子孙清零，动态子孙移除）。</summary>
         public void ClearNode(int parentHash, int childId)
         {
             int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            ClearNode(pathHash);
+            ClearNodeRecursive(pathHash);
         }
 
         /// <summary>订阅动态子节点变化，注册时立即回调当前状态。</summary>
@@ -397,12 +397,47 @@ namespace RedDot
 
         #endregion
 
+        /// <summary>清零自身 SelfCount（不递归，子节点不受影响）。</summary>
         public void ClearNode(int pathHash)
         {
             if (pathHash == 0)
                 return;
 
             SetRedDot(pathHash, 0);
+        }
+
+        /// <summary>
+        /// 递归清理子树：静态节点 SelfCount → 0，动态节点 RemoveDynamicLeafNode。
+        /// 移除失败（如有监听器）则回退到 SetRedDot(hash, 0)。
+        /// </summary>
+        public void ClearNodeRecursive(int pathHash)
+        {
+            if (pathHash == 0) return;
+            EnsureRegistered();
+
+            int nodeIndex = _trie.FindIndex(pathHash);
+            if (nodeIndex == RedDotTrie.INVALID_INDEX) return;
+
+            _childrenBuffer.Clear();
+            _trie.GetChildren(nodeIndex, _childrenBuffer);
+
+            // 先递归清理子节点
+            for (int i = _childrenBuffer.Count - 1; i >= 0; i--)
+            {
+                int childIdx = _childrenBuffer[i];
+                int childHash = _trie.GetPathHash(childIdx);
+                ClearNodeRecursive(childHash);
+            }
+
+            // 清理自身：静态清零，动态移除（移除失败则回退到清零）
+            if (_staticPathHashes.Contains(pathHash))
+            {
+                SetRedDot(pathHash, 0);
+            }
+            else if (!RemoveDynamicLeafNode(pathHash))
+            {
+                SetRedDot(pathHash, 0);
+            }
         }
 
         /// <summary>移除运行时动态创建的叶子节点。静态生成路径请使用 ClearNode。</summary>

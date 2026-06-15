@@ -1,6 +1,6 @@
 # RedDot 红点系统技术文档
 
-> **版本**：1.0  
+> **版本**：1.1  
 > **Unity 版本**：2022.3.17f1  
 > **语言**：C#（.NET Standard 2.1）  
 > **核心特性**：零运行时字符串分配、O(depth) 增量祖先传播、编辑器全可视化
@@ -706,7 +706,8 @@ int  RegisterNode(int pathHash, int parentPathHash, bool isStatic = false);
 
 // 写入
 void SetRedDot(int pathHash, int count, RedDotType type = RedDotType.Normal);
-void ClearNode(int pathHash);
+void ClearNode(int pathHash);                         // 清零自身（不递归）
+void ClearNodeRecursive(int pathHash);                // 递归清整棵子树
 bool RemoveDynamicLeafNode(int pathHash);
 
 // 查询
@@ -730,7 +731,7 @@ void SetRedDot(int parentHash, int childId, int count, RedDotType type);
 int  GetRedDot(int parentHash, int childId);
 int  GetSelfRedDot(int parentHash, int childId);
 RedDotState GetState(int parentHash, int childId);
-void ClearNode(int parentHash, int childId);
+void ClearNode(int parentHash, int childId);         // 递归清（等效 ClearNodeRecursive）
 void AddListener(int parentHash, int childId, Action<RedDotState> callback);
 void RemoveListener(int parentHash, int childId, Action<RedDotState> callback);
 ```
@@ -830,7 +831,8 @@ bool hasMail = mgr.GetRedDot(RedDotPaths.Root_Mail) > 0;
 // 动态节点（运行时创建，如邮件第 1001 封、商店第 42 件）
 int mailHash = mgr.RegisterDynamicNode(RedDotPaths.Root_Mail, 1001);
 mgr.SetRedDot(RedDotPaths.Root_Mail, 1001, 1, RedDotType.IsNew);
-mgr.ClearNode(RedDotPaths.Root_Mail, 1001);
+mgr.ClearNode(RedDotPaths.Root_Mail, 1001);       // 动态节点默认递归清
+mgr.ClearNodeRecursive(RedDotPaths.Root_Mail);    // 整棵 Mail 子树清零
 int count = mgr.GetRedDot(RedDotPaths.Root_Mail, 1001);
 
 // 监听
