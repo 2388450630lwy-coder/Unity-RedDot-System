@@ -333,7 +333,70 @@ namespace RedDot
             _data.RemoveListener(nodeIndex, callback);
         }
 
-        /// <summary>清零路径的自身红点。静态生成路径只清数据，不移除节点。</summary>
+        #region 动态节点
+
+        // 动态节点 = 父节点 hash + 业务 int ID，通过 RedDotHash.ComputeDynamic 计算子节点 hash，零字符串分配。
+        // 适用于运行时动态创建的红点，如邮件第 N 封、背包第 N 格、活动第 N 期。
+
+        /// <summary>注册动态子节点。parentHash 如 RedDotPaths.Root_Mail，childId 如 1001。</summary>
+        public int RegisterDynamicNode(int parentHash, int childId)
+        {
+            EnsureRegistered();
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            return RegisterNode(pathHash, parentHash, isStatic: false);
+        }
+
+        /// <summary>设置动态子节点红点。</summary>
+        public void SetRedDot(int parentHash, int childId, int count, RedDotType type = RedDotType.Normal)
+        {
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            SetRedDot(pathHash, count, type);
+        }
+
+        /// <summary>查询动态子节点 TotalCount。</summary>
+        public int GetRedDot(int parentHash, int childId)
+        {
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            return GetRedDot(pathHash);
+        }
+
+        /// <summary>查询动态子节点 SelfCount。</summary>
+        public int GetSelfRedDot(int parentHash, int childId)
+        {
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            return GetSelfRedDot(pathHash);
+        }
+
+        /// <summary>获取动态子节点状态快照。</summary>
+        public RedDotState GetState(int parentHash, int childId)
+        {
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            return GetState(pathHash);
+        }
+
+        /// <summary>清零动态子节点。</summary>
+        public void ClearNode(int parentHash, int childId)
+        {
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            ClearNode(pathHash);
+        }
+
+        /// <summary>订阅动态子节点变化，注册时立即回调当前状态。</summary>
+        public void AddListener(int parentHash, int childId, Action<RedDotState> callback)
+        {
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            AddListener(pathHash, callback);
+        }
+
+        /// <summary>取消订阅动态子节点。</summary>
+        public void RemoveListener(int parentHash, int childId, Action<RedDotState> callback)
+        {
+            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            RemoveListener(pathHash, callback);
+        }
+
+        #endregion
+
         public void ClearNode(int pathHash)
         {
             if (pathHash == 0)

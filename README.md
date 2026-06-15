@@ -278,6 +278,30 @@ public static int Compute(string value)
 - `unchecked` 允许溢出回绕
 - 32-bit 适合万级路径；路径量极大时升级 64-bit
 
+### 5.2 动态节点 Hash
+
+```csharp
+/// <summary>
+/// 用父路径 hash + 业务 ID 计算动态节点 hash，零字符串分配。
+/// 如 ComputeDynamic(RedDotPaths.Root_Mail, 1001)。
+/// </summary>
+public static int ComputeDynamic(int parentHash, int childId)
+{
+    uint hash = FNV_OFFSET_BASIS;
+    hash ^= (byte)(parentHash & 0xFF); hash *= FNV_PRIME;
+    hash ^= (byte)((parentHash >> 8) & 0xFF); hash *= FNV_PRIME;
+    hash ^= (byte)((parentHash >> 16) & 0xFF); hash *= FNV_PRIME;
+    hash ^= (byte)((parentHash >> 24) & 0xFF); hash *= FNV_PRIME;
+    hash ^= (byte)(childId & 0xFF); hash *= FNV_PRIME;
+    hash ^= (byte)((childId >> 8) & 0xFF); hash *= FNV_PRIME;
+    hash ^= (byte)((childId >> 16) & 0xFF); hash *= FNV_PRIME;
+    hash ^= (byte)((childId >> 24) & 0xFF); hash *= FNV_PRIME;
+    return unchecked((int)hash);
+}
+```
+
+对 `parentHash` 和 `childId` 各 4 字节做 FNV-1a，零 string、零 byte[]、零装箱。用于动态节点场景：`RedDotHash.ComputeDynamic(RedDotPaths.Root_Mail, 1001)`。
+
 ---
 
 ## 6. 门面层 — RedDotManager
@@ -699,6 +723,16 @@ void RemoveListener(int pathHash, Action<RedDotState> callback);
 
 // 管理
 void ResetAll();
+
+// 动态节点（parentHash + childId，零字符串分配）
+int  RegisterDynamicNode(int parentHash, int childId);
+void SetRedDot(int parentHash, int childId, int count, RedDotType type);
+int  GetRedDot(int parentHash, int childId);
+int  GetSelfRedDot(int parentHash, int childId);
+RedDotState GetState(int parentHash, int childId);
+void ClearNode(int parentHash, int childId);
+void AddListener(int parentHash, int childId, Action<RedDotState> callback);
+void RemoveListener(int parentHash, int childId, Action<RedDotState> callback);
 ```
 
 ### RedDotTrie
@@ -745,6 +779,7 @@ void Clear();
 ```csharp
 static int Compute(string value);
 static int Compute(byte[] data);
+static int ComputeDynamic(int parentHash, int childId);  // 动态节点，零分配
 ```
 
 ### RedDotState
@@ -785,18 +820,25 @@ void SetPathHash(int newPathHash);
 ### 14.2 业务代码调用
 
 ```csharp
-// 设置红点
-RedDotManager.Instance.SetRedDot(RedDotPaths.Root_Mail_System, 3, RedDotType.IsNew);
+var mgr = RedDotManager.Instance;
 
-// 清零
-RedDotManager.Instance.ClearNode(RedDotPaths.Root_Mail_System);
+// 静态路径（编辑器预定义）
+mgr.SetRedDot(RedDotPaths.Root_Mail_System, 3, RedDotType.IsNew);
+mgr.ClearNode(RedDotPaths.Root_Mail_System);
+bool hasMail = mgr.GetRedDot(RedDotPaths.Root_Mail) > 0;
 
-// 查询（用于条件判断）
-bool hasMailRedDot = RedDotManager.Instance.GetRedDot(RedDotPaths.Root_Mail) > 0;
+// 动态节点（运行时创建，如邮件第 1001 封、商店第 42 件）
+int mailHash = mgr.RegisterDynamicNode(RedDotPaths.Root_Mail, 1001);
+mgr.SetRedDot(RedDotPaths.Root_Mail, 1001, 1, RedDotType.IsNew);
+mgr.ClearNode(RedDotPaths.Root_Mail, 1001);
+int count = mgr.GetRedDot(RedDotPaths.Root_Mail, 1001);
 
-// 监听（用于 UI 更新）
-RedDotManager.Instance.AddListener(RedDotPaths.Root_Mail, state => {
+// 监听
+mgr.AddListener(RedDotPaths.Root_Mail, state => {
     mailIcon.SetActive(state.Visible);
+});
+mgr.AddListener(RedDotPaths.Root_Mail, 1001, state => {
+    Debug.Log($"邮件 1001 红点: {state.TotalCount}");
 });
 ```
 
