@@ -1,7 +1,7 @@
 namespace RedDot
 {
     /// <summary>
-    /// 红点类型。父节点聚合所有子节点类型位，优先级 Number > IsNew > CanUpdate > Tips > Normal。
+    /// 红点类型。父节点聚合所有子节点类型位，优先级 IsNew > CanUpdate > Tips > Normal > Number。
     /// </summary>
     public enum RedDotType
     {

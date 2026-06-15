@@ -123,7 +123,7 @@ public enum RedDotType
 **优先级**（`RedDotTypeHelper.PriorityOrder`）：
 
 ```
-Number > IsNew > CanUpdate > Tips > Normal
+IsNew > CanUpdate > Tips > Normal > Number
 ```
 
 **父节点聚合规则**：父节点的类型 = `自身类型 | 所有子节点类型`（位或）。
@@ -134,7 +134,7 @@ Hero (CanUpdate | IsNew)          ← 父节点聚合所有子节点类型
 └── Hero_Upgrade (CanUpdate)      ← 子节点2
 ```
 
-- `GetEffectiveType(hash)` → 返回**最高优先级**的单个类型（`Number`）
+- `GetEffectiveType(hash)` → 返回**最高优先级**的单个类型（`IsNew`）
 - `GetActiveTypes(hash)` → 返回**所有活跃类型**的列表（`[Number, IsNew, Tips]`）
 
 ---
@@ -414,7 +414,7 @@ public enum RedDotType
 **优先级排序** (`RedDotTypeHelper.PriorityOrder`)：
 
 ```
-Number > IsNew > CanUpdate > Tips > Normal
+IsNew > CanUpdate > Tips > Normal > Number
 ```
 
 **类型聚合**：父节点类型 = 自身类型 | 所有子节点类型（位或）
@@ -760,7 +760,7 @@ bool Visible { get; }  // TotalCount > 0
 ### RedDotTypeHelper
 
 ```csharp
-static readonly RedDotType[] PriorityOrder;  // Number, IsNew, CanUpdate, Tips, Normal
+static readonly RedDotType[] PriorityOrder;  // IsNew, CanUpdate, Tips, Normal, Number
 ```
 
 ### RedDotBinder
