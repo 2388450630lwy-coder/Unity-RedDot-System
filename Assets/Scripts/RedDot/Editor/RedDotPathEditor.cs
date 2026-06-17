@@ -445,7 +445,7 @@ namespace RedDot.Editor
                     int colIdx = _def.Paths.FindIndex(x => x.Hash == hash);
                     if (colIdx >= 0)
                     {
-                        Toast($"Hash 冲突！'{full}' 与 '{_def.Paths[colIdx].Path}' hash 相同 (0x{hash:X8})，已跳过");
+                        Toast($"Hash 冲突！'{full}' 与 '{_def.Paths[colIdx].Path}' hash 相同 (0x{hash:X16})，已跳过");
                         continue;
                     }
 
@@ -536,7 +536,7 @@ namespace RedDot.Editor
                 int colIdx = _def.Paths.FindIndex(x => x.Hash == hash);
                 if (colIdx >= 0)
                 {
-                    Debug.LogWarning($"[RedDotPathEditor] BatchImport Hash 冲突: '{path}' 与 '{_def.Paths[colIdx].Path}' 产生相同 hash (0x{hash:X8})，已跳过");
+                    Debug.LogWarning($"[RedDotPathEditor] BatchImport Hash 冲突: '{path}' 与 '{_def.Paths[colIdx].Path}' 产生相同 hash (0x{hash:X16})，已跳过");
                     skipped++;
                     continue;
                 }
@@ -674,8 +674,8 @@ namespace RedDot.Editor
             foreach (var e in _def.Paths.OrderBy(p => DepthOf(p.Path)).ThenBy(p => p.Path))
             {
                 int sep = e.Path.LastIndexOf('_');
-                string pc = sep >= 0 ? $"{cn}.{e.Path.Substring(0, sep)}" : "0";
-                sb.AppendLine($"            mgr.RegisterNode({cn}.{e.Path}, {pc}, true, \"{e.Path}\");");
+                string pc = sep >= 0 ? $"{cn}.{e.Path.Substring(0, sep)}" : "0L";
+                sb.AppendLine($"            mgr.RegisterNode({cn}.{e.Path}, {pc}, true);");
             }
             sb.AppendLine("        }"); sb.AppendLine("    }");
             if (!string.IsNullOrEmpty(_def.Namespace)) sb.AppendLine("}");
