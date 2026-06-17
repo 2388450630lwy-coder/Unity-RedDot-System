@@ -1,6 +1,5 @@
 using UnityEngine;
 using TMPro;
-using Unity.VisualScripting;
 
 namespace RedDot
 {
@@ -14,7 +13,7 @@ namespace RedDot
         [SerializeField]
         [RedDotPathSelector]
         [Tooltip("从 RedDotPaths 常量中选择红点路径")]
-        private int _redDotPathHash;
+        private long _redDotPathHash;
 
         [SerializeField]
         [Tooltip("超过此数量显示 \"99+\"")]
@@ -129,7 +128,7 @@ namespace RedDot
             Refresh(state);
         }
 
-        public void SetPathHash(int newPathHash)
+        public void SetPathHash(long newPathHash)
         {
             if (newPathHash == _redDotPathHash)
                 return;

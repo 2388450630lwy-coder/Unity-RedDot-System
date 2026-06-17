@@ -328,7 +328,7 @@ namespace RedDot.Editor
             // Hash（左侧与注释对齐）
             EditorGUILayout.BeginHorizontal();
             EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.TextField("Hash", $"0x{entry.Hash:X8}");
+            EditorGUILayout.TextField("Hash", $"0x{entry.Hash:X16}");
             EditorGUI.EndDisabledGroup();
             if (GUILayout.Button("复制", EditorStyles.miniButton, GUILayout.Width(36)))
             { EditorGUIUtility.systemCopyBuffer = entry.Hash.ToString(); Toast("Hash 已复制"); }
@@ -435,8 +435,19 @@ namespace RedDot.Editor
                     string p = parts[i];
                     if (string.IsNullOrEmpty(p)) continue;
                     string full = string.IsNullOrEmpty(curParent) ? p : $"{curParent}_{p}";
-                    int hash = RedDotHash.Compute(full);
-                    if (_def.Paths.Any(x => x.Hash == hash)) { curParent = full; continue; }
+
+                    // 优先用路径字符串判断是否已存在，避免哈希碰撞时误判
+                    if (_def.Paths.Any(x => x.Path == full)) { curParent = full; continue; }
+
+                    long hash = RedDotHash.Compute(full);
+
+                    // 检测哈希碰撞：不同路径产生了相同 hash
+                    int colIdx = _def.Paths.FindIndex(x => x.Hash == hash);
+                    if (colIdx >= 0)
+                    {
+                        Toast($"Hash 冲突！'{full}' 与 '{_def.Paths[colIdx].Path}' hash 相同 (0x{hash:X8})，已跳过");
+                        continue;
+                    }
 
                     string cmt = (i == parts.Length - 1) ? _addComment.Trim() : "";
                     _def.Paths.Add(new RedDotPathEntry(full, hash, cmt));
@@ -515,8 +526,21 @@ namespace RedDot.Editor
             {
                 string path = line.Trim(); if (string.IsNullOrEmpty(path)) continue;
                 path = path.Replace("/", "_").Replace(" ", "_");
-                int hash = RedDotHash.Compute(path);
-                if (_def.Paths.Any(x => x.Hash == hash)) { skipped++; continue; }
+
+                // 优先用路径字符串判断是否已存在，避免哈希碰撞时误判
+                if (_def.Paths.Any(x => x.Path == path)) { skipped++; continue; }
+
+                long hash = RedDotHash.Compute(path);
+
+                // 检测哈希碰撞：不同路径产生了相同 hash
+                int colIdx = _def.Paths.FindIndex(x => x.Hash == hash);
+                if (colIdx >= 0)
+                {
+                    Debug.LogWarning($"[RedDotPathEditor] BatchImport Hash 冲突: '{path}' 与 '{_def.Paths[colIdx].Path}' 产生相同 hash (0x{hash:X8})，已跳过");
+                    skipped++;
+                    continue;
+                }
+
                 _def.Paths.Add(new RedDotPathEntry(path, hash, "")); added++;
             }
             MarkDirty(); _root = null;
@@ -542,7 +566,7 @@ namespace RedDot.Editor
             int sep = old.Path.LastIndexOf('_');
             string pp = sep >= 0 ? old.Path.Substring(0, sep) : "";
             string nf = string.IsNullOrEmpty(pp) ? newName : $"{pp}_{newName}";
-            int nh = RedDotHash.Compute(nf);
+            long nh = RedDotHash.Compute(nf);
             if (_def.Paths.Any(x => x.Hash == nh)) { EditorUtility.DisplayDialog("错误", $"路径已存在：{nf}", "确定"); return false; }
             _def.Paths[node.Index] = new RedDotPathEntry(nf, nh, old.Comment);
             string op = old.Path + "_", np = nf + "_";
@@ -632,7 +656,7 @@ namespace RedDot.Editor
                 string cn = e.Path.Replace("-", "_").Replace(" ", "_");
                 if (!string.IsNullOrEmpty(e.Comment)) sb.AppendLine($"        /// <summary>{e.Comment}</summary>");
                 sb.AppendLine($"        /// <code>{e.Path}</code>");
-                sb.AppendLine($"        public const int {cn} = unchecked((int)0x{e.Hash:X8});");
+                sb.AppendLine($"        public const long {cn} = unchecked((long)0x{e.Hash:X16}UL);");
             }
             sb.AppendLine("    }"); if (!string.IsNullOrEmpty(_def.Namespace)) sb.AppendLine("}");
             return sb.ToString();
@@ -651,7 +675,7 @@ namespace RedDot.Editor
             {
                 int sep = e.Path.LastIndexOf('_');
                 string pc = sep >= 0 ? $"{cn}.{e.Path.Substring(0, sep)}" : "0";
-                sb.AppendLine($"            mgr.RegisterNode({cn}.{e.Path}, {pc}, true);");
+                sb.AppendLine($"            mgr.RegisterNode({cn}.{e.Path}, {pc}, true, \"{e.Path}\");");
             }
             sb.AppendLine("        }"); sb.AppendLine("    }");
             if (!string.IsNullOrEmpty(_def.Namespace)) sb.AppendLine("}");

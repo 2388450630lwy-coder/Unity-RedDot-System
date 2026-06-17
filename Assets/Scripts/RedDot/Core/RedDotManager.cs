@@ -40,10 +40,19 @@ namespace RedDot
 
         public static bool HasInstance => _instance != null;
 
-        private RedDotTrie _trie;
+        private RedDotTrie      _trie;
         private RedDotDataStore _data;
-        private readonly List<int> _childrenBuffer = new List<int>(8);
-        private readonly HashSet<int> _staticPathHashes = new HashSet<int>();
+        private readonly List<int>    _childrenBuffer   = new List<int>(8);
+        private readonly HashSet<long> _staticPathHashes = new HashSet<long>();
+
+        /// <summary>
+        /// 动态节点复合键映射：(parentHash, childId) → nodeIndex。
+        /// 与 Trie 的 hash→index 映射并行存在，保证即使 ComputeDynamic 发生哈希碰撞，
+        /// 复合键仍能精确路由到正确节点，完全消除动态节点碰撞影响。
+        /// </summary>
+        private readonly Dictionary<(long parentHash, int childId), int> _dynamicKeyToIndex
+            = new Dictionary<(long, int), int>();
+
         private bool _initialized;
         private bool _registered;
         private bool _isRegistering;
@@ -68,9 +77,7 @@ namespace RedDot
         private void OnDestroy()
         {
             if (_instance == this)
-            {
                 _instance = null;
-            }
         }
 
         private void Initialize()
@@ -78,8 +85,8 @@ namespace RedDot
             if (_initialized)
                 return;
 
-            _trie = new RedDotTrie();
-            _data = new RedDotDataStore();
+            _trie        = new RedDotTrie();
+            _data        = new RedDotDataStore();
             _initialized = true;
         }
 
@@ -108,7 +115,7 @@ namespace RedDot
         /// <summary>
         /// 注册红点节点。运行时零字符串分配，所有 hash 由编辑器预计算。
         /// </summary>
-        public int RegisterNode(int pathHash, int parentPathHash, bool isStatic = false)
+        public int RegisterNode(long pathHash, long parentPathHash, bool isStatic = false)
         {
             Initialize();
             int nodeIndex = _trie.RegisterNode(pathHash, parentPathHash);
@@ -121,35 +128,26 @@ namespace RedDot
             return nodeIndex;
         }
 
+        // ══════════════════════════════════════════════════════════════════
+        //  核心写操作（内部）
+        // ══════════════════════════════════════════════════════════════════
+
         /// <summary>
-        /// 设置节点的自身红点计数和类型，增量沿祖先链上溯。
+        /// 通过 nodeIndex 直接写入红点计数，跳过 hash 查找，供静态和动态路径共用。
         /// </summary>
-        public void SetRedDot(int pathHash, int count, RedDotType type = RedDotType.Normal)
+        private void SetRedDotByIndex(int nodeIndex, int count, RedDotType type)
         {
-            if (pathHash == 0)
-                return;
-
-            EnsureRegistered();
-
             if (count < 0)
             {
                 Debug.LogWarning($"[RedDotManager] SetRedDot: count={count} < 0, clamped to 0");
                 count = 0;
             }
 
-            int nodeIndex = _trie.FindIndex(pathHash);
-            if (nodeIndex == RedDotTrie.INVALID_INDEX)
-            {
-                Debug.LogWarning($"[RedDotManager] SetRedDot: pathHash=0x{pathHash:X8} not registered");
-                return;
-            }
-
             int delta = _data.SetSelfCount(nodeIndex, count);
 
-            // count 清零时同步清掉自身类型，避免父节点类型残留
-            RedDotType selfType = count > 0 ? type : 0;
-            bool selfTypeChanged = _data.SetSelfTypeFlag(nodeIndex, selfType);
-            bool totalTypeChanged = RefreshNodeFlags(nodeIndex);
+            RedDotType selfType        = count > 0 ? type : 0;
+            bool       selfTypeChanged  = _data.SetSelfTypeFlag(nodeIndex, selfType);
+            bool       totalTypeChanged = RefreshNodeFlags(nodeIndex);
 
             if (delta != 0 || selfTypeChanged || totalTypeChanged)
                 NotifyNode(nodeIndex);
@@ -165,6 +163,28 @@ namespace RedDot
             }
         }
 
+        // ══════════════════════════════════════════════════════════════════
+        //  静态路径公共 API（通过 long hash 路由）
+        // ══════════════════════════════════════════════════════════════════
+
+        /// <summary>设置静态节点的自身红点计数和类型。</summary>
+        public void SetRedDot(long pathHash, int count, RedDotType type = RedDotType.Normal)
+        {
+            if (pathHash == 0L)
+                return;
+
+            EnsureRegistered();
+
+            int nodeIndex = _trie.FindIndex(pathHash);
+            if (nodeIndex == RedDotTrie.INVALID_INDEX)
+            {
+                Debug.LogWarning($"[RedDotManager] SetRedDot: pathHash=0x{pathHash:X16} not registered");
+                return;
+            }
+
+            SetRedDotByIndex(nodeIndex, count, type);
+        }
+
         /// <summary>刷新节点聚合类型标志 = self | children</summary>
         private bool RefreshNodeFlags(int nodeIndex)
         {
@@ -173,13 +193,13 @@ namespace RedDot
 
             for (int i = 0; i < _childrenBuffer.Count; i++)
                 flags |= _data.GetTypeFlags(_childrenBuffer[i]);
-                
+
             return _data.SetTypeFlags(nodeIndex, flags);
         }
 
         private void NotifyNode(int nodeIndex)
         {
-            int pathHash = _trie.GetPathHash(nodeIndex);
+            long pathHash = _trie.GetPathHash(nodeIndex);
             RedDotState state = _data.GetState(nodeIndex, pathHash);
             try
             {
@@ -191,9 +211,9 @@ namespace RedDot
             }
         }
 
-        public RedDotType GetEffectiveType(int pathHash)
+        public RedDotType GetEffectiveType(long pathHash)
         {
-            if (pathHash == 0)
+            if (pathHash == 0L)
                 return 0;
 
             EnsureRegistered();
@@ -205,26 +225,19 @@ namespace RedDot
             return _data.GetHighestType(nodeIndex);
         }
 
-        public List<RedDotType> GetActiveTypes(int pathHash)
+        public List<RedDotType> GetActiveTypes(long pathHash)
         {
-            if (pathHash == 0)
-                return new List<RedDotType>();
-
-            EnsureRegistered();
-            int nodeIndex = _trie.FindIndex(pathHash);
-
-            if (nodeIndex == RedDotTrie.INVALID_INDEX)
-                return new List<RedDotType>();
-
-            return _data.GetActiveTypes(nodeIndex);
+            var result = new List<RedDotType>();
+            GetActiveTypes(pathHash, result);
+            return result;
         }
 
         /// <summary>获取活跃类型（优先级降序），写入调用方复用的 List，零分配。</summary>
-        public void GetActiveTypes(int pathHash, List<RedDotType> outList)
+        public void GetActiveTypes(long pathHash, List<RedDotType> outList)
         {
             outList.Clear();
 
-            if (pathHash == 0)
+            if (pathHash == 0L)
                 return;
 
             EnsureRegistered();
@@ -236,10 +249,10 @@ namespace RedDot
             _data.GetActiveTypes(nodeIndex, outList);
         }
 
-        public RedDotState GetState(int pathHash)
+        public RedDotState GetState(long pathHash)
         {
-            if (pathHash == 0)
-                return new RedDotState(0, 0, 0, 0);
+            if (pathHash == 0L)
+                return new RedDotState(0L, 0, 0, 0);
 
             EnsureRegistered();
             int nodeIndex = _trie.FindIndex(pathHash);
@@ -251,9 +264,9 @@ namespace RedDot
         }
 
         /// <summary>获取路径的聚合红点计数（自身 + 子孙），O(1)。</summary>
-        public int GetRedDot(int pathHash)
+        public int GetRedDot(long pathHash)
         {
-            if (pathHash == 0)
+            if (pathHash == 0L)
                 return 0;
 
             EnsureRegistered();
@@ -266,9 +279,9 @@ namespace RedDot
         }
 
         /// <summary>获取路径的自身红点计数（不含子孙）。</summary>
-        public int GetSelfRedDot(int pathHash)
+        public int GetSelfRedDot(long pathHash)
         {
-            if (pathHash == 0)
+            if (pathHash == 0L)
                 return 0;
 
             EnsureRegistered();
@@ -280,17 +293,15 @@ namespace RedDot
             return _data.GetSelfCount(nodeIndex);
         }
 
-        /// <summary>
-        /// 订阅红点变化，注册时立即回调一次当前状态。
-        /// </summary>
-        public void AddListener(int pathHash, Action<RedDotState> callback)
+        /// <summary>订阅红点变化，注册时立即回调一次当前状态。</summary>
+        public void AddListener(long pathHash, Action<RedDotState> callback)
         {
             if (callback == null)
                 return;
 
-            if (pathHash == 0)
+            if (pathHash == 0L)
             {
-                callback.Invoke(new RedDotState(0, 0, 0, 0));
+                callback.Invoke(new RedDotState(0L, 0, 0, 0));
                 return;
             }
 
@@ -299,7 +310,7 @@ namespace RedDot
             int nodeIndex = _trie.FindIndex(pathHash);
             if (nodeIndex == RedDotTrie.INVALID_INDEX)
             {
-                Debug.LogWarning($"[RedDotManager] AddListener: pathHash=0x{pathHash:X8} not registered");
+                Debug.LogWarning($"[RedDotManager] AddListener: pathHash=0x{pathHash:X16} not registered");
                 return;
             }
 
@@ -315,92 +326,162 @@ namespace RedDot
             }
         }
 
-        public void RemoveListener(int pathHash, Action<RedDotState> callback)
+        public void RemoveListener(long pathHash, Action<RedDotState> callback)
         {
-            if (callback == null)
-                return;
-
-            if (pathHash == 0)
+            if (callback == null || pathHash == 0L)
                 return;
 
             EnsureRegistered();
 
             int nodeIndex = _trie.FindIndex(pathHash);
-
             if (nodeIndex == RedDotTrie.INVALID_INDEX)
                 return;
 
             _data.RemoveListener(nodeIndex, callback);
         }
 
-        #region 动态节点
+        // ══════════════════════════════════════════════════════════════════
+        //  动态节点 API（通过复合键 (parentHash, childId) 路由，零碰撞）
+        // ══════════════════════════════════════════════════════════════════
 
-        // 动态节点 = 父节点 hash + 业务 int ID，通过 RedDotHash.ComputeDynamic 计算子节点 hash，零字符串分配。
-        // 适用于运行时动态创建的红点，如邮件第 N 封、背包第 N 格、活动第 N 期。
+        // 动态节点 = 父节点 hash + 业务 int ID，适用于运行时动态创建的红点，
+        // 如邮件第 N 封、背包第 N 格、活动第 N 期。
+        //
+        // 关键设计：所有动态 API 优先通过 _dynamicKeyToIndex[(parentHash, childId)]
+        // 查找 nodeIndex，而非通过 ComputeDynamic 产生的 long hash。
+        // 即使两个不同的 (parentHash, childId) 对恰好生成相同 hash，
+        // 复合键仍能精确路由，完全消除动态节点碰撞的影响。
 
-        /// <summary>注册动态子节点。parentHash 如 RedDotPaths.Root_Mail，childId 如 1001。</summary>
-        public int RegisterDynamicNode(int parentHash, int childId)
+        /// <summary>
+        /// 通过复合键查找动态节点 nodeIndex。
+        /// 找不到时回退到 hash 查找（兼容直接用 hash 注册的旧节点）。
+        /// </summary>
+        private int FindDynamicIndex(long parentHash, int childId)
+        {
+            if (_dynamicKeyToIndex.TryGetValue((parentHash, childId), out int nodeIndex))
+                return nodeIndex;
+
+            return _trie.FindIndex(RedDotHash.ComputeDynamic(parentHash, childId));
+        }
+
+        /// <summary>
+        /// 注册动态子节点。parentHash 如 RedDotPaths.Root_Mail，childId 如 1001。
+        /// 同时写入复合键映射，后续所有操作通过复合键路由，不受 hash 碰撞影响。
+        /// </summary>
+        public int RegisterDynamicNode(long parentHash, int childId)
         {
             EnsureRegistered();
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            return RegisterNode(pathHash, parentHash, isStatic: false);
+
+            var key = (parentHash, childId);
+            if (_dynamicKeyToIndex.TryGetValue(key, out int cached))
+                return cached;
+
+            long pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            int  nodeIndex = RegisterNode(pathHash, parentHash, isStatic: false);
+            _dynamicKeyToIndex[key] = nodeIndex;
+            return nodeIndex;
         }
 
         /// <summary>设置动态子节点红点。</summary>
-        public void SetRedDot(int parentHash, int childId, int count, RedDotType type = RedDotType.Normal)
+        public void SetRedDot(long parentHash, int childId, int count, RedDotType type = RedDotType.Normal)
         {
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            SetRedDot(pathHash, count, type);
+            EnsureRegistered();
+
+            int nodeIndex = FindDynamicIndex(parentHash, childId);
+            if (nodeIndex == RedDotTrie.INVALID_INDEX)
+            {
+                Debug.LogWarning($"[RedDotManager] SetRedDot: dynamic node ({parentHash:X16}, {childId}) not registered");
+                return;
+            }
+
+            SetRedDotByIndex(nodeIndex, count, type);
         }
 
         /// <summary>查询动态子节点 TotalCount。</summary>
-        public int GetRedDot(int parentHash, int childId)
+        public int GetRedDot(long parentHash, int childId)
         {
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            return GetRedDot(pathHash);
+            EnsureRegistered();
+            int nodeIndex = FindDynamicIndex(parentHash, childId);
+            return nodeIndex == RedDotTrie.INVALID_INDEX ? 0 : _data.GetTotalCount(nodeIndex);
         }
 
         /// <summary>查询动态子节点 SelfCount。</summary>
-        public int GetSelfRedDot(int parentHash, int childId)
+        public int GetSelfRedDot(long parentHash, int childId)
         {
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            return GetSelfRedDot(pathHash);
+            EnsureRegistered();
+            int nodeIndex = FindDynamicIndex(parentHash, childId);
+            return nodeIndex == RedDotTrie.INVALID_INDEX ? 0 : _data.GetSelfCount(nodeIndex);
         }
 
         /// <summary>获取动态子节点状态快照。</summary>
-        public RedDotState GetState(int parentHash, int childId)
+        public RedDotState GetState(long parentHash, int childId)
         {
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            return GetState(pathHash);
+            EnsureRegistered();
+            int nodeIndex = FindDynamicIndex(parentHash, childId);
+            if (nodeIndex == RedDotTrie.INVALID_INDEX)
+                return new RedDotState(RedDotHash.ComputeDynamic(parentHash, childId), 0, 0, 0);
+
+            long pathHash = _trie.GetPathHash(nodeIndex);
+            return _data.GetState(nodeIndex, pathHash);
         }
 
         /// <summary>清零动态子节点（递归清理：静态子孙清零，动态子孙移除）。</summary>
-        public void ClearNode(int parentHash, int childId)
+        public void ClearNode(long parentHash, int childId)
         {
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
+            EnsureRegistered();
+            int nodeIndex = FindDynamicIndex(parentHash, childId);
+            if (nodeIndex == RedDotTrie.INVALID_INDEX) return;
+
+            long pathHash = _trie.GetPathHash(nodeIndex);
             ClearNodeRecursive(pathHash);
         }
 
         /// <summary>订阅动态子节点变化，注册时立即回调当前状态。</summary>
-        public void AddListener(int parentHash, int childId, Action<RedDotState> callback)
+        public void AddListener(long parentHash, int childId, Action<RedDotState> callback)
         {
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            AddListener(pathHash, callback);
+            if (callback == null) return;
+            EnsureRegistered();
+
+            int nodeIndex = FindDynamicIndex(parentHash, childId);
+            if (nodeIndex == RedDotTrie.INVALID_INDEX)
+            {
+                Debug.LogWarning($"[RedDotManager] AddListener: dynamic node ({parentHash:X16}, {childId}) not registered");
+                return;
+            }
+
+            _data.AddListener(nodeIndex, callback);
+
+            try
+            {
+                long pathHash = _trie.GetPathHash(nodeIndex);
+                callback.Invoke(_data.GetState(nodeIndex, pathHash));
+            }
+            catch (Exception e)
+            {
+                Debug.LogError($"[RedDotManager] AddListener initial callback error: {e}");
+            }
         }
 
         /// <summary>取消订阅动态子节点。</summary>
-        public void RemoveListener(int parentHash, int childId, Action<RedDotState> callback)
+        public void RemoveListener(long parentHash, int childId, Action<RedDotState> callback)
         {
-            int pathHash = RedDotHash.ComputeDynamic(parentHash, childId);
-            RemoveListener(pathHash, callback);
+            if (callback == null) return;
+            EnsureRegistered();
+
+            int nodeIndex = FindDynamicIndex(parentHash, childId);
+            if (nodeIndex == RedDotTrie.INVALID_INDEX) return;
+
+            _data.RemoveListener(nodeIndex, callback);
         }
 
-        #endregion
+        // ══════════════════════════════════════════════════════════════════
+        //  清理
+        // ══════════════════════════════════════════════════════════════════
 
         /// <summary>清零自身 SelfCount（不递归，子节点不受影响）。</summary>
-        public void ClearNode(int pathHash)
+        public void ClearNode(long pathHash)
         {
-            if (pathHash == 0)
+            if (pathHash == 0L)
                 return;
 
             SetRedDot(pathHash, 0);
@@ -410,9 +491,9 @@ namespace RedDot
         /// 递归清理子树：静态节点 SelfCount → 0，动态节点 RemoveDynamicLeafNode。
         /// 移除失败（如有监听器）则回退到 SetRedDot(hash, 0)。
         /// </summary>
-        public void ClearNodeRecursive(int pathHash)
+        public void ClearNodeRecursive(long pathHash)
         {
-            if (pathHash == 0) return;
+            if (pathHash == 0L) return;
             EnsureRegistered();
 
             int nodeIndex = _trie.FindIndex(pathHash);
@@ -421,29 +502,24 @@ namespace RedDot
             _childrenBuffer.Clear();
             _trie.GetChildren(nodeIndex, _childrenBuffer);
 
-            // 先递归清理子节点
             for (int i = _childrenBuffer.Count - 1; i >= 0; i--)
             {
-                int childIdx = _childrenBuffer[i];
-                int childHash = _trie.GetPathHash(childIdx);
+                _trie.GetChildren(nodeIndex, _childrenBuffer);
+                int  childIdx  = _childrenBuffer[i];
+                long childHash = _trie.GetPathHash(childIdx);
                 ClearNodeRecursive(childHash);
             }
 
-            // 清理自身：静态清零，动态移除（移除失败则回退到清零）
             if (_staticPathHashes.Contains(pathHash))
-            {
                 SetRedDot(pathHash, 0);
-            }
             else if (!RemoveDynamicLeafNode(pathHash))
-            {
                 SetRedDot(pathHash, 0);
-            }
         }
 
         /// <summary>移除运行时动态创建的叶子节点。静态生成路径请使用 ClearNode。</summary>
-        public bool RemoveDynamicLeafNode(int pathHash)
+        public bool RemoveDynamicLeafNode(long pathHash)
         {
-            if (pathHash == 0)
+            if (pathHash == 0L)
                 return false;
 
             EnsureRegistered();
@@ -452,7 +528,6 @@ namespace RedDot
                 return false;
 
             int nodeIndex = _trie.FindIndex(pathHash);
-
             if (nodeIndex == RedDotTrie.INVALID_INDEX)
                 return false;
 
@@ -463,7 +538,18 @@ namespace RedDot
             bool removed = _trie.TryRemoveNode(pathHash);
 
             if (removed)
+            {
                 _data.ResetNode(nodeIndex);
+
+                // 同步清理复合键映射，避免 nodeIndex 被复用后误命中
+                (long, int) foundKey = default;
+                bool found = false;
+                foreach (var kv in _dynamicKeyToIndex)
+                {
+                    if (kv.Value == nodeIndex) { foundKey = kv.Key; found = true; break; }
+                }
+                if (found) _dynamicKeyToIndex.Remove(foundKey);
+            }
 
             return removed;
         }
@@ -475,6 +561,7 @@ namespace RedDot
             _trie.Clear();
             _data.Clear();
             _staticPathHashes.Clear();
+            _dynamicKeyToIndex.Clear();
             _registered = false;
             EnsureRegistered();
         }

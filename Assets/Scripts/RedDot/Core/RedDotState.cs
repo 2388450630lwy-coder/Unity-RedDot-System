@@ -5,18 +5,18 @@ namespace RedDot
     /// </summary>
     public readonly struct RedDotState
     {
-        public readonly int PathHash;
+        public readonly long PathHash;
         public readonly int SelfCount;
         public readonly int TotalCount;
         public readonly RedDotType EffectiveType;
 
         public bool Visible => TotalCount > 0;
 
-        public RedDotState(int pathHash, int selfCount, int totalCount, RedDotType effectiveType)
+        public RedDotState(long pathHash, int selfCount, int totalCount, RedDotType effectiveType)
         {
-            PathHash = pathHash;
-            SelfCount = selfCount;
-            TotalCount = totalCount;
+            PathHash      = pathHash;
+            SelfCount     = selfCount;
+            TotalCount    = totalCount;
             EffectiveType = effectiveType;
         }
     }

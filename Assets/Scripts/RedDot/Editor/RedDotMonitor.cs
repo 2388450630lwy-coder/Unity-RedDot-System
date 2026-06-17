@@ -10,7 +10,7 @@ namespace RedDot.Editor
         {
             public string Name;
             public string FullPath;
-            public int PathHash;
+            public long PathHash;
             public int Depth;
             public int SelfCount;
             public int TotalCount;
@@ -31,7 +31,7 @@ namespace RedDot.Editor
         private int _activeNodeCount;
 
         private RedDotPathDefinition _pathDefinition;
-        private Dictionary<int, string> _hashToDisplayName = new Dictionary<int, string>();
+        private Dictionary<long, string> _hashToDisplayName = new Dictionary<long, string>();
         private HashSet<string> _collapsedPaths = new HashSet<string>();
 
         private static readonly Color ColorActive = new Color(0.9f, 0.2f, 0.2f);
@@ -286,58 +286,52 @@ namespace RedDot.Editor
             RedDotDataStore dataStore = GetDataStore();
             if (dataStore == null) return;
 
-            _totalNodeCount = trie.NodeCount - 1;
+            _totalNodeCount  = trie.NodeCount - 1;
             _activeNodeCount = 0;
             _treeRoot = new TreeNode { Name = "Root", FullPath = "", Depth = -1 };
 
-            Dictionary<int, TreeNode> nodeMap = new Dictionary<int, TreeNode>();
+            Dictionary<long, TreeNode> nodeMap = new Dictionary<long, TreeNode>();
 
             for (int nodeIndex = 1; nodeIndex < trie.NodeCount; nodeIndex++)
             {
-                int pathHash = trie.GetPathHash(nodeIndex);
+                long pathHash = trie.GetPathHash(nodeIndex);
 
                 string fullPath = _hashToDisplayName.TryGetValue(pathHash, out string fullName)
-                    ? fullName : $"0x{pathHash:X8}";
+                    ? fullName : $"0x{pathHash:X16}";
 
-                string displayName = fullPath;
-                int lastUnderscoreIndex = displayName.LastIndexOf('_');
+                string displayName        = fullPath;
+                int    lastUnderscoreIndex = displayName.LastIndexOf('_');
                 if (lastUnderscoreIndex >= 0)
-                {
                     displayName = displayName.Substring(lastUnderscoreIndex + 1);
-                }
 
                 int totalCount = dataStore.GetTotalCount(nodeIndex);
                 if (totalCount > 0) _activeNodeCount++;
 
                 nodeMap[pathHash] = new TreeNode
                 {
-                    Name = displayName,
-                    FullPath = fullPath,
-                    PathHash = pathHash,
-                    Depth = CalculateDepth(trie, nodeIndex),
-                    SelfCount = dataStore.GetSelfCount(nodeIndex),
-                    TotalCount = totalCount,
+                    Name          = displayName,
+                    FullPath      = fullPath,
+                    PathHash      = pathHash,
+                    Depth         = CalculateDepth(trie, nodeIndex),
+                    SelfCount     = dataStore.GetSelfCount(nodeIndex),
+                    TotalCount    = totalCount,
                     ListenerCount = dataStore.ListenerCount(nodeIndex),
-                    DisplayType = dataStore.GetHighestType(nodeIndex),
-                    IsExpanded = !_collapsedPaths.Contains(fullPath)
+                    DisplayType   = dataStore.GetHighestType(nodeIndex),
+                    IsExpanded    = !_collapsedPaths.Contains(fullPath)
                 };
             }
 
             // Build parent-child links
             foreach (var pair in nodeMap)
             {
-                int nodeIndex = trie.FindIndex(pair.Key);
-                int parentIndex = trie.GetParentIndex(nodeIndex);
-                int parentPathHash = parentIndex != RedDotTrie.INVALID_INDEX ? trie.GetPathHash(parentIndex) : 0;
+                int  nodeIndex     = trie.FindIndex(pair.Key);
+                int  parentIndex   = trie.GetParentIndex(nodeIndex);
+                long parentPathHash = parentIndex != RedDotTrie.INVALID_INDEX ? trie.GetPathHash(parentIndex) : 0L;
 
-                if (parentPathHash == 0 || !nodeMap.ContainsKey(parentPathHash))
-                {
+                if (parentPathHash == 0L || !nodeMap.ContainsKey(parentPathHash))
                     _treeRoot.Children.Add(pair.Value);
-                }
                 else
-                {
                     nodeMap[parentPathHash].Children.Add(pair.Value);
-                }
             }
         }
 

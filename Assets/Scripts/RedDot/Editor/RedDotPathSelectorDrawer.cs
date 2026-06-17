@@ -9,23 +9,24 @@ using UnityEngine;
 namespace RedDot.Editor
 {
     /// <summary>
-    /// PropertyDrawer for [RedDotPathSelector] — 可搜索的路径下拉菜单
+    /// PropertyDrawer for [RedDotPathSelector] — 可搜索的路径下拉菜单。
+    /// 支持 long 序列化字段（FNV-1a 64-bit hash）。
     /// </summary>
     [CustomPropertyDrawer(typeof(RedDotPathSelectorAttribute))]
     public class RedDotPathSelectorDrawer : PropertyDrawer
     {
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
         {
+            // 支持 int（向后兼容）和 long 字段
             if (property.propertyType != SerializedPropertyType.Integer)
             {
                 EditorGUI.PropertyField(position, property, label);
                 return;
             }
 
-            int currentHash = property.intValue;
+            long currentHash = property.longValue;
             string currentLabel = GetLabel(currentHash);
 
-            // 标准 label + field 布局
             var labelRect = new Rect(position.x, position.y, EditorGUIUtility.labelWidth, position.height);
             var fieldRect = new Rect(position.x + EditorGUIUtility.labelWidth, position.y,
                 position.width - EditorGUIUtility.labelWidth, position.height);
@@ -37,38 +38,41 @@ namespace RedDot.Editor
                 var dropdown = new RedDotPathDropdown(new AdvancedDropdownState(), currentHash,
                     selectedHash =>
                     {
-                        property.intValue = selectedHash;
+                        property.longValue = selectedHash;
                         property.serializedObject.ApplyModifiedProperties();
                     });
                 dropdown.Show(fieldRect);
             }
         }
 
-        private static string GetLabel(int hash)
+        private static string GetLabel(long hash)
         {
-            if (hash == 0) return "— None —";
+            if (hash == 0L) return "— None —";
 
-            // Search for RedDotPaths type across all assemblies
-            Type type = null;
-            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                type = asm.GetType("RedDot.RedDotPaths");
-                if (type != null) break;
-            }
-
+            Type type = FindRedDotPathsType();
             if (type != null)
             {
                 foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Static))
                 {
-                    if (field.FieldType == typeof(int) && field.IsLiteral)
+                    if (field.FieldType == typeof(long) && field.IsLiteral)
                     {
-                        int h = (int)field.GetValue(null);
+                        long h = (long)field.GetValue(null);
                         if (h == hash) return field.Name;
                     }
                 }
             }
 
-            return $"Unknown (0x{hash:X8})";
+            return $"Unknown (0x{hash:X16})";
+        }
+
+        private static Type FindRedDotPathsType()
+        {
+            foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                var t = asm.GetType("RedDot.RedDotPaths");
+                if (t != null) return t;
+            }
+            return null;
         }
 
         public override float GetPropertyHeight(SerializedProperty property, GUIContent label)
@@ -78,20 +82,21 @@ namespace RedDot.Editor
     }
 
     /// <summary>
-    /// 可搜索的红点路径下拉菜单（基于 AdvancedDropdown）
+    /// 可搜索的红点路径下拉菜单（基于 AdvancedDropdown）。
+    /// AdvancedDropdownItem.id 只有 int 宽度，因此用列表索引作为 id，选中后再查 hash。
     /// </summary>
     internal class RedDotPathDropdown : AdvancedDropdown
     {
-        private readonly int _currentHash;
-        private readonly Action<int> _onSelected;
-        private List<PathItem> _items;
+        private readonly long           _currentHash;
+        private readonly Action<long>   _onSelected;
+        private          List<PathItem> _items;
 
-        public RedDotPathDropdown(AdvancedDropdownState state, int currentHash, Action<int> onSelected)
+        public RedDotPathDropdown(AdvancedDropdownState state, long currentHash, Action<long> onSelected)
             : base(state)
         {
             _currentHash = currentHash;
-            _onSelected = onSelected;
-            minimumSize = new Vector2(300, 400);
+            _onSelected  = onSelected;
+            minimumSize  = new Vector2(300, 400);
         }
 
         protected override AdvancedDropdownItem BuildRoot()
@@ -99,7 +104,11 @@ namespace RedDot.Editor
             var root = new AdvancedDropdownItem("RedDot Paths");
             _items = new List<PathItem>();
 
-            // 查找 RedDotPaths 类型
+            // 索引 0 保留给 None
+            _items.Add(new PathItem { Name = "— None —", Hash = 0L });
+            var none = new AdvancedDropdownItem("— None —") { id = 0 };
+            root.AddChild(none);
+
             Type type = null;
             foreach (var asm in AppDomain.CurrentDomain.GetAssemblies())
             {
@@ -110,18 +119,19 @@ namespace RedDot.Editor
             if (type == null) return root;
 
             var fields = type.GetFields(BindingFlags.Public | BindingFlags.Static)
-                .Where(f => f.FieldType == typeof(int) && f.IsLiteral)
-                .Select(f => new PathItem { Name = f.Name, Hash = (int)f.GetValue(null) })
+                .Where(f => f.FieldType == typeof(long) && f.IsLiteral)
+                .Select(f => new PathItem { Name = f.Name, Hash = (long)f.GetValue(null) })
                 .OrderBy(p => p.Name.Split('_').Length)
                 .ThenBy(p => p.Name)
                 .ToList();
 
-            // 构建树形结构
             var nodeMap = new Dictionary<string, AdvancedDropdownItem>();
+
             foreach (var item in fields)
             {
                 var parts = item.Name.Split('_');
                 AdvancedDropdownItem parent = root;
+
                 for (int i = 0; i < parts.Length - 1; i++)
                 {
                     string key = string.Join("_", parts, 0, i + 1);
@@ -134,39 +144,32 @@ namespace RedDot.Editor
                     parent = mid;
                 }
 
-                // 末段名 + 完整路径，搜索时能匹配任意层级
-                string label = $"{parts[parts.Length - 1]}   ({item.Name})";
-                var leaf = new AdvancedDropdownItem(label)
-                {
-                    id = item.Hash
-                };
-                parent.AddChild(leaf);
+                // 用列表索引作为 id，避免 long hash 超出 int 范围
+                int  itemIndex = _items.Count;
                 _items.Add(item);
 
-                // 高亮当前选中
-                if (item.Hash == _currentHash)
-                {
-                    leaf.enabled = false;
-                }
-            }
+                string leafLabel = $"{parts[parts.Length - 1]}   ({item.Name})";
+                var leaf = new AdvancedDropdownItem(leafLabel) { id = itemIndex };
 
-            // 添加 None 选项
-            var none = new AdvancedDropdownItem("— None —") { id = 0 };
-            root.AddChild(none);
-            _items.Insert(0, new PathItem { Name = "— None —", Hash = 0 });
+                if (item.Hash == _currentHash)
+                    leaf.enabled = false;
+
+                parent.AddChild(leaf);
+            }
 
             return root;
         }
 
         protected override void ItemSelected(AdvancedDropdownItem item)
         {
-            _onSelected?.Invoke(item.id);
+            if (item.id >= 0 && item.id < _items.Count)
+                _onSelected?.Invoke(_items[item.id].Hash);
         }
 
         private class PathItem
         {
             public string Name;
-            public int Hash;
+            public long   Hash;
         }
     }
 }

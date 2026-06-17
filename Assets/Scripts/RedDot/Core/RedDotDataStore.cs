@@ -168,7 +168,7 @@ namespace RedDot
             }
         }
 
-        public RedDotState GetState(int nodeIndex, int pathHash)
+        public RedDotState GetState(int nodeIndex, long pathHash)
         {
             if (nodeIndex < 0 || nodeIndex >= _capacity)
                 return new RedDotState(pathHash, 0, 0, 0);

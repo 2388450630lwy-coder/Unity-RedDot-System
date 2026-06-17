@@ -1,5 +1,5 @@
 ﻿// AUTO-GENERATED
-// 2026-06-15 22:31
+// 2026-06-18 00:01
 
 namespace RedDot
 {
@@ -7,7 +7,7 @@ namespace RedDot
     {
         public static void RegisterAll() { RegisterAll(RedDotManager.Instance); }
         public static void RegisterAll(RedDotManager mgr) { if (mgr == null) return;
-            mgr.RegisterNode(RedDotPaths.Root, 0, true);
+            mgr.RegisterNode(RedDotPaths.Root, 0L, true);
             mgr.RegisterNode(RedDotPaths.Root_Bag, RedDotPaths.Root, true);
             mgr.RegisterNode(RedDotPaths.Root_Mail, RedDotPaths.Root, true);
             mgr.RegisterNode(RedDotPaths.Root_Role, RedDotPaths.Root, true);

@@ -14,18 +14,18 @@ namespace RedDot
         [Tooltip("路径字符串，用 / 分隔层级")]
         public string Path;
 
-        /// <summary>路径的 int hash 值（由编辑器工具自动生成）</summary>
-        [Tooltip("自动生成的 hash 值")]
-        public int Hash;
+        /// <summary>路径的 64-bit hash 值（由编辑器工具自动生成）</summary>
+        [Tooltip("自动生成的 hash 值（FNV-1a 64-bit）")]
+        public long Hash;
 
         /// <summary>注释说明</summary>
         [Tooltip("路径说明")]
         public string Comment;
 
-        public RedDotPathEntry(string path, int hash, string comment = "")
+        public RedDotPathEntry(string path, long hash, string comment = "")
         {
-            Path = path;
-            Hash = hash;
+            Path    = path;
+            Hash    = hash;
             Comment = comment;
         }
     }
@@ -90,7 +90,7 @@ namespace RedDot
                 var entry = Paths[i];
                 // 规范化 / → _ 保证一致性
                 string normalizedPath = NormalizePath(entry.Path);
-                int hash = RedDotHash.Compute(normalizedPath);
+                long hash = RedDotHash.Compute(normalizedPath);
                 Paths[i] = new RedDotPathEntry(normalizedPath, hash, entry.Comment);
             }
         }
@@ -101,7 +101,7 @@ namespace RedDot
         public bool Validate(out List<string> errors)
         {
             errors = new List<string>();
-            var hashSet = new HashSet<int>();
+            var hashSet = new HashSet<long>();
             var pathSet = new HashSet<string>();
 
             for (int i = 0; i < Paths.Count; i++)
@@ -124,21 +124,21 @@ namespace RedDot
                     errors.Add($"Entry {i}: duplicate path '{normalizedPath}'");
                 }
 
-                // hash 冲突检查（概率极低但值得报告）
-                int expectedHash = RedDotHash.Compute(normalizedPath);
+                // hash 陈旧检查（hash 与路径字符串不一致，需重算）
+                long expectedHash = RedDotHash.Compute(normalizedPath);
                 if (entry.Hash != expectedHash)
                 {
-                    errors.Add($"Entry {i}: stale hash for path '{normalizedPath}' (stored=0x{entry.Hash:X8}, expected=0x{expectedHash:X8})");
+                    errors.Add($"Entry {i}: stale hash for path '{normalizedPath}' (stored=0x{entry.Hash:X16}, expected=0x{expectedHash:X16})");
                 }
 
-                if (expectedHash == 0)
+                if (expectedHash == 0L)
                 {
                     errors.Add($"Entry {i}: hash for path '{normalizedPath}' is reserved zero");
                 }
 
                 if (!hashSet.Add(expectedHash))
                 {
-                    errors.Add($"Entry {i}: hash collision for path '{normalizedPath}' (hash=0x{expectedHash:X8})");
+                    errors.Add($"Entry {i}: hash collision for path '{normalizedPath}' (hash=0x{expectedHash:X16})");
                 }
 
                 // 空段检查

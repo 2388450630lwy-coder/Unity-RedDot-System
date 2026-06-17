@@ -45,7 +45,6 @@ namespace RedDot
 
         private void Awake()
         {
-            RedDotPathsRegistration.RegisterAll();
             BindButtons();
             RefreshAllUI();
         }

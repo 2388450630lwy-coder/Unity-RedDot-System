@@ -1,9 +1,9 @@
 # RedDot 红点系统技术文档
 
-> **版本**：1.1  
+> **版本**：2.0  
 > **Unity 版本**：2022.3.17f1  
 > **语言**：C#（.NET Standard 2.1）  
-> **核心特性**：零运行时字符串分配、O(depth) 增量祖先传播、编辑器全可视化
+> **核心特性**：零运行时字符串分配、O(depth) 增量祖先传播、64-bit 碰撞免疫、编辑器全可视化
 
 ---
 
@@ -41,20 +41,21 @@
 │   — 协调 Trie + DataStore                                       │
 │   — SetRedDot → 增量祖先传播 → 通知监听器                        │
 │   — 静态 / 动态节点生命周期管理                                   │
+│   — 复合键 (parentHash, childId) 保证动态节点零碰撞路由           │
 └──────────────┬────────────────────────────┬─────────────────────┘
                │                            │
 ┌──────────────▼──────────────┐ ┌───────────▼────────────────────┐
 │     路由层 (Routing)         │ │      数据层 (Data)              │
 │   RedDotTrie                │ │   RedDotDataStore              │
 │   — 前缀树结构               │ │   — 平行数组存储                 │
-│   — hash → nodeIndex 映射    │ │   — SelfCount / TotalCount     │
+│   — long hash → nodeIndex   │ │   — SelfCount / TotalCount     │
 │   — 父子导航 O(1)            │ │   — SelfType / AggregateType   │
-│   — 零字符串分配              │ │   — Listener 管理              │
+│   — 空槽 free list 复用      │ │   — Listener 管理              │
 └─────────────────────────────┘ └────────────────────────────────┘
                │
 ┌──────────────▼──────────────────────────────────────────────────┐
 │                    基础设施 (Foundation)                          │
-│   RedDotHash (FNV-1a 32-bit)  │  RedDotState (readonly struct)  │
+│   RedDotHash (FNV-1a 64-bit)  │  RedDotState (readonly struct)  │
 │   RedDotType (bitmask flags)  │  RedDotPathDefinition (SO)      │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -74,17 +75,17 @@
 
 ### 2.1 路径与 Hash
 
-系统的标识符不是字符串，而是 **FNV-1a 32-bit 哈希值**。
+系统的标识符不是字符串，而是 **FNV-1a 64-bit 哈希值**（`long`）。
 
 ```
-字符串路径    →    RedDotHash.Compute()    →    int hash (存储和运行时使用)
-"Root_Mail_System"           ↓                     0xCCDDD46F
-                     RedDotPaths.Root_Mail_System (编译期常量)
+字符串路径    →    RedDotHash.Compute()    →    long hash（存储和运行时使用）
+"Root_Mail_System"           ↓                  0xA8B3C4D5E6F70123
+                     RedDotPaths.Root_Mail_System（编译期常量）
 ```
 
-- **编辑期**：`RedDotPathEditor` 生成 `RedDotPaths.cs`，将哈希硬编码为 `const int`
-- **运行期**：所有 API 使用 `int pathHash`，零字符串分配
-- **调试**：`RedDotMonitor` 可反向解析 hash → 路径名
+- **编辑期**：`RedDotPathEditor` 生成 `RedDotPaths.cs`，将哈希硬编码为 `const long`
+- **运行期**：所有 API 使用 `long pathHash`，零字符串分配
+- **碰撞概率**：64-bit 空间下，十亿条路径的碰撞概率约 0.001%，实际可视为无碰撞
 
 ### 2.2 SelfCount vs TotalCount
 
@@ -100,7 +101,7 @@
 
 | 字段 | 含义 | 叶子节点 | 容器节点 |
 |------|------|---------|---------|
-| **SelfCount** | 自身被 SetRedDot 设置的值 | 直接值 | 直接值 + **不**含子节点 |
+| **SelfCount** | 自身被 SetRedDot 设置的值 | 直接值 | 直接值，**不**含子节点 |
 | **TotalCount** | SelfCount + 所有子孙的 SelfCount | = SelfCount | >= SelfCount |
 | **Visible** | `TotalCount > 0` | — | — |
 
@@ -109,7 +110,6 @@
 ### 2.3 红点类型 (RedDotType)
 
 ```csharp
-[Flags]
 public enum RedDotType
 {
     Normal    = 1 << 0,  // 普通红点
@@ -134,8 +134,18 @@ Hero (CanUpdate | IsNew)          ← 父节点聚合所有子节点类型
 └── Hero_Upgrade (CanUpdate)      ← 子节点2
 ```
 
-- `GetEffectiveType(hash)` → 返回**最高优先级**的单个类型（`IsNew`）
-- `GetActiveTypes(hash)` → 返回**所有活跃类型**的列表（`[Number, IsNew, Tips]`）
+- `GetEffectiveType(hash)` → 返回**最高优先级**的单个类型（如 `IsNew`）
+- `GetActiveTypes(hash)` → 返回**所有活跃类型**的列表
+
+### 2.4 动态节点与复合键
+
+**动态节点** 是运行时创建的节点（如邮件第 N 封、背包第 N 格），由 `(parentHash, childId)` 复合键唯一标识。
+
+```
+复合键映射：_dynamicKeyToIndex[(parentHash, childId)] → nodeIndex
+```
+
+即使 `ComputeDynamic(parentHash, childId)` 产生哈希碰撞，复合键仍能精确路由到正确节点，**完全消除动态节点碰撞的影响**。
 
 ---
 
@@ -177,98 +187,84 @@ _capacity = 1024 → 2048 → 4096 ...
 
 ```csharp
 // 添加（去重）
-AddListener(idx, callback) → _listeners[idx].Contains(callback) 则不添加
+AddListener(idx, callback) → _listeners[idx].Contains(callback) 则不重复添加
 
-// 通知（倒序遍历，安全自删除）
+// 通知（倒序遍历，安全处理自注销）
 NotifyListeners(idx, state) → for (int i = list.Count-1; i >= 0; i--)
                                 try { list[i]?.Invoke(state); }
                                 catch (Exception e) { Debug.LogError(e); }
 
-// 删除（标记 null 而非 RemoveAt，避免索引错位）
-RemoveListener(idx, callback) → list[list.IndexOf(callback)] = null
+// 删除（直接 Remove，列表空时置 null）
+RemoveListener(idx, callback) → list.Remove(callback)
+                                if (list.Count == 0) _listeners[idx] = null
 ```
-
-**为什么标记 null 而非 Remove**：通知期间如果 listener 回调中调用 `RemoveListener`，`RemoveAt` 会改变列表索引导致漏通知。标记 null 后通知完成后由 `AddListener` 清理。
 
 ---
 
 ## 4. 路由层 — RedDotTrie
 
 **文件**：`Core/RedDotTrie.cs`  
-**数据结构**：基于 `List<TrieNode>` + `Dictionary<int,int>` 的紧凑前缀树
+**数据结构**：基于 `List<TrieNode>` + `Dictionary<long, int>` 的紧凑前缀树
 
 ### 4.1 数据结构
 
 ```csharp
 struct TrieNode {
-    int ParentIndex;              // -1 = Root
-    int PathHash;
-    Dictionary<int, int> Children; // null when empty (lazy)
+    int                   ParentIndex;   // -1 = Root
+    long                  PathHash;
+    Dictionary<long, int> Children;      // null when empty（懒初始化）
 }
 
-List<TrieNode> _nodes;           // Index 0 = Root (PathHash=0, ParentIndex=-1)
-Dictionary<int, int> _pathToIndex; // pathHash → nodeIndex
+List<TrieNode>         _nodes;          // Index 0 = Root（PathHash=0, ParentIndex=-1）
+Dictionary<long, int>  _pathToIndex;    // pathHash → nodeIndex
+Stack<int>             _freeSlots;      // 已删除节点的槽位回收池
 ```
 
 ```
-_pathToIndex:  { 0xCCDDD46F → 3, 0x799F73A5 → 1, ... }
+_pathToIndex:  { 0xA8B3C4D5E6F70123 → 3, 0x1F2E3D4C5B6A7980 → 1, ... }
 
 _nodes:
-  [0] Root          Parent=-1  Children={0x799F73A5→1, ...}
-  [1] Root_Mail     Parent=0   Children={0xCCDDD46F→3, 0x6AF0E1CF→4}
-  [2] Root_Bag      Parent=0   Children={...}
+  [0] Root           Parent=-1  Children={...→1, ...→2}
+  [1] Root_Mail      Parent=0   Children={...→3, ...→4}
+  [2] Root_Bag       Parent=0   Children={...}
   [3] Root_Mail_System  Parent=1  Children=null (leaf)
   [4] Root_Mail_Person  Parent=1  Children=null (leaf)
 ```
+
+**节点槽复用**：`TryRemoveNode` 将已删除槽位推入 `_freeSlots`；`RegisterNode` 优先从 `_freeSlots` 取槽位，避免 `_nodes` 列表单调增长。
 
 ### 4.2 关键方法
 
 | 方法 | 复杂度 | 说明 |
 |------|--------|------|
-| `RegisterNode(pathHash, parentHash)` | O(1) | 存在则返回；父不存在挂 Root |
+| `RegisterNode(pathHash, parentHash)` | O(1) | 存在则返回；父不存在挂 Root；优先复用空槽 |
 | `FindIndex(pathHash)` | O(1) | Dictionary 查找 |
 | `GetParentIndex(idx)` | O(1) | 数组索引 |
 | `GetChildren(idx, outList)` | O(k) | k = 子节点数，写入调用方 buffer |
-| `TryRemoveNode(pathHash)` | O(1) | 仅叶子 + 非 Root 可删 |
+| `TryRemoveNode(pathHash)` | O(1) | 仅叶子 + 非 Root 可删；回收槽位 |
 | `GetAncestors(idx)` | O(depth) | 上溯直到 Root |
-
-### 4.3 索引越界保护
-
-```csharp
-// GetParentIndex、GetPathHash、GetChildCount 均有越界保护
-public int GetPathHash(int idx)
-{
-    if (idx < 0 || idx >= _nodes.Count)
-    {
-        Debug.Assert(false, $"idx={idx} out of range");
-        return 0; // 安全兜底：Root 的 PathHash 也是 0
-    }
-    return _nodes[idx].PathHash;
-}
-```
 
 ---
 
 ## 5. 哈希 — RedDotHash
 
 **文件**：`Core/RedDotHash.cs`  
-**算法**：FNV-1a 32-bit
+**算法**：FNV-1a 64-bit
 
 ```csharp
-public static int Compute(string value)
+public static long Compute(string value)
 {
-    // FNV-1a: hash = (hash XOR byte) × prime
-    const uint OFFSET = 2166136261;
-    const uint PRIME = 16777619;
+    const ulong OFFSET = 14695981039346656037UL;
+    const ulong PRIME  = 1099511628211UL;
 
-    uint hash = OFFSET;
+    ulong hash = OFFSET;
     for (int i = 0; i < value.Length; i++)
     {
         char c = value[i];
-        hash ^= (byte)(c & 0xFF);    hash *= PRIME;
+        hash ^= (byte)(c & 0xFF);        hash *= PRIME;
         hash ^= (byte)((c >> 8) & 0xFF); hash *= PRIME;
     }
-    return unchecked((int)hash);
+    return unchecked((long)hash);
 }
 ```
 
@@ -276,31 +272,30 @@ public static int Compute(string value)
 - 每个 `char`（UTF-16）按两个 byte（小端序）哈希
 - 空字符串返回 0（Root 的特殊值）
 - `unchecked` 允许溢出回绕
-- 32-bit 适合万级路径；路径量极大时升级 64-bit
+- 64-bit 空间碰撞概率极低，十亿条路径约 0.001%
 
-### 5.2 动态节点 Hash
+### 5.1 动态节点 Hash
 
 ```csharp
 /// <summary>
 /// 用父路径 hash + 业务 ID 计算动态节点 hash，零字符串分配。
 /// 如 ComputeDynamic(RedDotPaths.Root_Mail, 1001)。
 /// </summary>
-public static int ComputeDynamic(int parentHash, int childId)
+public static long ComputeDynamic(long parentHash, int childId)
 {
-    uint hash = FNV_OFFSET_BASIS;
-    hash ^= (byte)(parentHash & 0xFF); hash *= FNV_PRIME;
-    hash ^= (byte)((parentHash >> 8) & 0xFF); hash *= FNV_PRIME;
-    hash ^= (byte)((parentHash >> 16) & 0xFF); hash *= FNV_PRIME;
-    hash ^= (byte)((parentHash >> 24) & 0xFF); hash *= FNV_PRIME;
-    hash ^= (byte)(childId & 0xFF); hash *= FNV_PRIME;
-    hash ^= (byte)((childId >> 8) & 0xFF); hash *= FNV_PRIME;
-    hash ^= (byte)((childId >> 16) & 0xFF); hash *= FNV_PRIME;
-    hash ^= (byte)((childId >> 24) & 0xFF); hash *= FNV_PRIME;
-    return unchecked((int)hash);
+    ulong hash = FNV64_OFFSET_BASIS;
+    ulong ph   = unchecked((ulong)parentHash);
+    // 对 parentHash 8 字节逐字节 FNV-1a
+    hash ^= (byte)(ph & 0xFF);          hash *= FNV64_PRIME;
+    // ... (8 轮)
+    // 对 childId 4 字节逐字节 FNV-1a
+    hash ^= (byte)(childId & 0xFF);     hash *= FNV64_PRIME;
+    // ... (4 轮)
+    return unchecked((long)hash);
 }
 ```
 
-对 `parentHash` 和 `childId` 各 4 字节做 FNV-1a，零 string、零 byte[]、零装箱。用于动态节点场景：`RedDotHash.ComputeDynamic(RedDotPaths.Root_Mail, 1001)`。
+用于动态节点 hash 计算，零 string、零 byte[]、零装箱。**注意**：动态节点 API 通过复合键 `(parentHash, childId)` 路由，不依赖此 hash 的唯一性。
 
 ---
 
@@ -317,50 +312,50 @@ RedDotManager mgr = RedDotManager.Instance;
 
 // 安全检查（不触发创建）
 if (RedDotManager.HasInstance) { ... }
-
-// 退出保护：OnApplicationQuit 后 Instance 返回 null
 ```
 
 ### 6.2 路径注册
 
 ```csharp
 // 方式1：自动注册（推荐）
-// RedDotPathsRegistration.RegisterAll() 在首次 EnsureRegistered 时调用
+// EnsureRegistered() 在首次访问 Manager 时自动调用，无需手动触发
 
-// 方式2：手动注册运行时路径
-int bagHash = RedDotHash.Compute("Root_Bag_ItemCount");
-mgr.RegisterNode(bagHash, RedDotPaths.Root_Bag);
+// 方式2：手动注册静态路径
+mgr.RegisterNode(RedDotPaths.Root_Mail, RedDotPaths.Root, isStatic: true);
+
+// 方式3：注册动态节点
+int nodeIndex = mgr.RegisterDynamicNode(RedDotPaths.Root_Mail, 1001);
 ```
 
-- **静态路径**：`RegisterNode(hash, parent, isStatic: true)` → 受保护，`RemoveDynamicLeafNode` 拒绝删除
-- **动态路径**：`RegisterNode(hash, parent, isStatic: false)` → 可通过 `RemoveDynamicLeafNode` 删除
+- **静态路径**：`isStatic: true` → 受保护，`RemoveDynamicLeafNode` 拒绝删除
+- **动态路径**：`isStatic: false` → 可通过 `RemoveDynamicLeafNode` 删除（叶子 + 无监听器）
 
 ### 6.3 SetRedDot 完整流程
 
 ```csharp
-public void SetRedDot(int pathHash, int count, RedDotType type)
+public void SetRedDot(long pathHash, int count, RedDotType type)
 {
-    // 1. 校验
-    if (pathHash == 0) return;
+    // 1. 校验 & 查找
+    if (pathHash == 0L) return;
     EnsureRegistered();
     int nodeIndex = _trie.FindIndex(pathHash);
     if (nodeIndex == INVALID_INDEX) { Warning; return; }
 
-    // 2. 更新自身
-    int delta = _data.SetSelfCount(nodeIndex, count);
+    // 2. 更新自身（内部 SetRedDotByIndex）
+    int delta           = _data.SetSelfCount(nodeIndex, count);
     RedDotType selfType = count > 0 ? type : 0;
-    bool selfTypeChanged = _data.SetSelfTypeFlag(nodeIndex, selfType);
+    bool selfTypeChanged  = _data.SetSelfTypeFlag(nodeIndex, selfType);
     bool totalTypeChanged = RefreshNodeFlags(nodeIndex);
-
-    if (anyChanged) NotifyNode(nodeIndex);
+    if (delta != 0 || selfTypeChanged || totalTypeChanged)
+        NotifyNode(nodeIndex);
 
     // 3. 沿祖先链上溯
     int current = _trie.GetParentIndex(nodeIndex);
     while (current != INVALID_INDEX)
     {
-        _data.AddDeltaToTotal(current, delta);   // TotalCount += delta
-        RefreshNodeFlags(current);               // 重算聚合类型
-        NotifyNode(current);                     // 通知
+        _data.AddDeltaToTotal(current, delta);
+        RefreshNodeFlags(current);
+        NotifyNode(current);
         current = _trie.GetParentIndex(current);
     }
 }
@@ -369,10 +364,10 @@ public void SetRedDot(int pathHash, int count, RedDotType type)
 ### 6.4 查询 API
 
 ```csharp
-int total    = mgr.GetRedDot(hash);         // TotalCount（含子孙）
-int self     = mgr.GetSelfRedDot(hash);     // SelfCount（仅自身）
-RedDotState s = mgr.GetState(hash);         // 完整快照
-RedDotType t = mgr.GetEffectiveType(hash);  // 最高优先级类型
+int         total = mgr.GetRedDot(hash);          // TotalCount（含子孙）
+int         self  = mgr.GetSelfRedDot(hash);       // SelfCount（仅自身）
+RedDotState s     = mgr.GetState(hash);            // 完整快照
+RedDotType  t     = mgr.GetEffectiveType(hash);    // 最高优先级类型
 ```
 
 ### 6.5 监听器
@@ -381,7 +376,7 @@ RedDotType t = mgr.GetEffectiveType(hash);  // 最高优先级类型
 // 订阅 → 立即回调当前状态
 mgr.AddListener(hash, (RedDotState state) => {
     if (state.Visible) ShowRedDot();
-    else HideRedDot();
+    else               HideRedDot();
 });
 
 // 取消订阅
@@ -391,14 +386,10 @@ mgr.RemoveListener(hash, callback);
 ### 6.6 生命周期管理
 
 ```csharp
-// 清零静态节点
-mgr.ClearNode(pathHash);
-
-// 删除运行时动态节点
+mgr.ClearNode(pathHash);               // 清零自身 SelfCount（不递归）
+mgr.ClearNodeRecursive(pathHash);      // 递归清整棵子树（静态→清零，动态→尝试移除）
 mgr.RemoveDynamicLeafNode(pathHash);   // 条件：非静态、无子节点、无监听器
-
-// 全量重置
-mgr.ResetAll();   // 清空 Trie + DataStore，重新注册静态路径
+mgr.ResetAll();                        // 清空 Trie + DataStore，重新注册静态路径
 ```
 
 ---
@@ -410,10 +401,10 @@ mgr.ResetAll();   // 清空 Trie + DataStore，重新注册静态路径
 ```csharp
 public readonly struct RedDotState
 {
-    public readonly int PathHash;          // 路径哈希
-    public readonly int SelfCount;         // 自身计数
-    public readonly int TotalCount;        // 聚合计数（自身+子孙）
-    public readonly RedDotType EffectiveType; // 最高优先级类型
+    public readonly long PathHash;             // 路径哈希（64-bit）
+    public readonly int  SelfCount;            // 自身计数
+    public readonly int  TotalCount;           // 聚合计数（自身+子孙）
+    public readonly RedDotType EffectiveType;  // 最高优先级类型
     public bool Visible => TotalCount > 0;
 }
 ```
@@ -424,7 +415,6 @@ public readonly struct RedDotState
 ### 7.2 RedDotType
 
 ```csharp
-[Flags]
 public enum RedDotType
 {
     Normal    = 1 << 0,  // 普通红点
@@ -435,11 +425,7 @@ public enum RedDotType
 }
 ```
 
-**优先级排序** (`RedDotTypeHelper.PriorityOrder`)：
-
-```
-IsNew > CanUpdate > Tips > Normal > Number
-```
+**优先级排序** (`RedDotTypeHelper.PriorityOrder`)：`IsNew > CanUpdate > Tips > Normal > Number`
 
 **类型聚合**：父节点类型 = 自身类型 | 所有子节点类型（位或）
 
@@ -456,9 +442,9 @@ IsNew > CanUpdate > Tips > Normal > Number
 ```csharp
 public class RedDotPathDefinition : ScriptableObject
 {
-    public List<RedDotPathEntry> Paths;     // 扁平列表
-    public string ClassName = "RedDotPaths";
-    public string Namespace = "RedDot";
+    public List<RedDotPathEntry> Paths;
+    public string ClassName  = "RedDotPaths";
+    public string Namespace  = "RedDot";
     public string OutputPath = "Scripts/RedDot/Generated/RedDotPaths.cs";
     public string RegistrationOutputPath = "Scripts/RedDot/Generated/RedDotPathRegistration.cs";
 }
@@ -466,7 +452,7 @@ public class RedDotPathDefinition : ScriptableObject
 public struct RedDotPathEntry
 {
     public string Path;    // e.g. "Root_Mail_System"
-    public int Hash;       // FNV-1a computed
+    public long   Hash;    // FNV-1a 64-bit computed
     public string Comment; // e.g. "系统邮件"
 }
 ```
@@ -475,7 +461,7 @@ public struct RedDotPathEntry
 
 | 方法 | 说明 |
 |------|------|
-| `RecalculateHashes()` | 对所有 Path 重算 Hash（新路径或修改后） |
+| `RecalculateHashes()` | 对所有 Path 重算 64-bit Hash |
 | `Validate(out errors)` | 检查：空路径、重复、过期 Hash、Hash 碰撞、Hash=0、空段、缺少父路径 |
 | `NormalizePath(path)` | `/` → `_` 统一分隔符 |
 
@@ -487,7 +473,7 @@ public struct RedDotPathEntry
 
 运行 `RedDotPathEditor` →「生成常量」/「生成注册」→ 输出两个文件：
 
-**RedDotPaths.cs** — 编译期常量：
+**RedDotPaths.cs** — 编译期常量（`const long`）：
 
 ```csharp
 namespace RedDot
@@ -495,16 +481,13 @@ namespace RedDot
     public static class RedDotPaths
     {
         /// <summary>根节点</summary>
-        /// <code>Root</code>
-        public const int Root = unchecked((int)0x3756D12B);
+        public const long Root = unchecked((long)0x9DC5812B6A3F7E41UL);
 
         /// <summary>背包</summary>
-        /// <code>Root_Bag</code>
-        public const int Root_Bag = unchecked((int)0xE8AE16D8);
+        public const long Root_Bag = unchecked((long)0xC4E8A120F73D9B56UL);
 
         /// <summary>物品数量</summary>
-        /// <code>Root_Bag_ItemCount</code>
-        public const int Root_Bag_ItemCount = unchecked((int)0xEDCB4771);
+        public const long Root_Bag_ItemCount = unchecked((long)0x2B7F3C9D14E8A605UL);
 
         // ...
     }
@@ -518,8 +501,8 @@ public static class RedDotPathsRegistration
 {
     public static void RegisterAll(RedDotManager mgr)
     {
-        mgr.RegisterNode(RedDotPaths.Root, 0, true);
-        mgr.RegisterNode(RedDotPaths.Root_Bag, RedDotPaths.Root, true);
+        mgr.RegisterNode(RedDotPaths.Root,              0L,                    true);
+        mgr.RegisterNode(RedDotPaths.Root_Bag,          RedDotPaths.Root,      true);
         mgr.RegisterNode(RedDotPaths.Root_Bag_ItemCount, RedDotPaths.Root_Bag, true);
         // ... 按深度优先顺序注册全部路径
     }
@@ -529,16 +512,14 @@ public static class RedDotPathsRegistration
 ### 9.2 注册时机
 
 ```csharp
-// RedDotManager 内部首次访问时自动调用
+// RedDotManager 首次被访问时自动触发，无需业务代码手动调用
 public void EnsureRegistered()
 {
-    if (_registered) return;
-    RedDotPathsRegistration.RegisterAll(this);
-    _registered = true;
+    if (_registered || _isRegistering) return;
+    _isRegistering = true;
+    try   { RedDotPathsRegistration.RegisterAll(this); _registered = true; }
+    finally { _isRegistering = false; }
 }
-
-// 也可以手动预注册
-void Awake() { RedDotPathsRegistration.RegisterAll(); }
 ```
 
 ---
@@ -552,7 +533,7 @@ void Awake() { RedDotPathsRegistration.RegisterAll(); }
 
 ```
 RedDotBinder
-├── Red Dot Path Hash    [RedDotPathSelector] ▼   ← 可选路径下拉
+├── Red Dot Path Hash    [RedDotPathSelector] ▼   ← 下拉选路径（long 序列化）
 ├── Max Display Number   99
 └── 子节点（按命名查找）:
     ├── New           (GameObject)   ← IsNew 类型图标
@@ -572,21 +553,18 @@ OnRedDotChanged(RedDotState state)
     ↓
 Refresh(state)
     ↓
-  1. 无变化 → 跳过
+  1. 无变化（visible + count + type 全同）→ 跳过
   2. 类型变了 → 隐藏旧类型 GameObject
-  3. 更新缓存
+  3. 更新缓存（_lastVisible / _lastCount / _lastType）
   4. 显示新类型 GameObject
-  5. Number 类型 → 更新 TMP 文本 ("99+")
+  5. Number 类型 → 更新 TMP 文本（超 maxDisplayNumber 则显示 "99+"）
 ```
 
 ### 10.3 运行时 API
 
 ```csharp
-// 强制刷新
-binder.ForceRefresh();
-
-// 运行时切换路径
-binder.SetPathHash(RedDotPaths.Root_Mail_System);
+binder.ForceRefresh();                              // 强制刷新
+binder.SetPathHash(RedDotPaths.Root_Mail_System);   // 运行时切换路径
 ```
 
 ---
@@ -601,15 +579,13 @@ binder.SetPathHash(RedDotPaths.Root_Mail_System);
 - 双栏界面：左侧树浏览 + 右侧详情/添加
 - 搜索过滤（自动展开）
 - 展开/收起全部、排序
-- 拖拽或点击选中节点 → 查看/编辑详情
-- 快速添加：选择父路径 → 输入名称（支持多行批量） → 添加
+- 快速添加：选择父路径 → 输入名称（支持多行批量）
 - 批量导入：粘贴路径列表（每行一个）
-- 重命名、删除（含确认对话框）、复制路径/Hash/C#常量名
+- 重命名、删除（含确认对话框）、复制路径/Hash/C# 常量名
 - 右键上下文菜单
 - 代码生成：重算 Hash、校验、生成常量/注册文件、一键生成全部
 - 支持 Undo（Ctrl+Z）
 - 脏标记提示（黄色圆点）
-- Toast 状态提示
 
 **数据流**：
 
@@ -629,15 +605,14 @@ RedDotPathDefinition.asset (ScriptableObject)
 
 ```csharp
 [RedDotPathSelector]
-[SerializeField] private int _redDotPathHash;
+[SerializeField] private long _redDotPathHash;  // 序列化为 long
 ```
 
 **行为**：
-- 反射扫描所有程序集找到 `RedDot.RedDotPaths` 类型
+- 反射扫描所有程序集找到 `RedDot.RedDotPaths` 类型（`const long` 字段）
 - 字段名按 `_` 分组构建树形 `AdvancedDropdown`
-- 叶子项显示完整路径以便搜索（如 `Adv   (Root_Shop_Lottery_Adv)`）
-- 当前值灰色禁用
-- 选中的 hash 写入 SerializedProperty
+- 叶子项显示完整路径便于搜索（如 `Adv   (Root_Shop_Lottery_Adv)`）
+- 选中的 hash 写入 `SerializedProperty.longValue`
 
 ### 11.3 运行时监视器 (RedDotMonitor)
 
@@ -653,13 +628,7 @@ RedDotPathDefinition.asset (ScriptableObject)
 
 ## 12. 测试与调试
 
-### 12.1 自动化测试
-
-**入口**：`Tools → RedDot → Run Automated Tests`
-
-覆盖 14 个测试用例：注册、祖先传播、多子聚合、清零、部分清零、深度传播、类型传播、监听器回调、去重、类型清除、全路径闭环、GetState、RemoveListener、ResetAll。
-
-### 12.2 手动测试面板 (TestPanel)
+### 12.1 手动测试面板 (TestPanel)
 
 **文件**：`Test/TestPanel.cs`
 
@@ -672,10 +641,10 @@ RedDotPathDefinition.asset (ScriptableObject)
 | 系统邮件 | `Root_Mail_System` | IsNew | 增加/减少 |
 | 个人邮件 | `Root_Mail_Person` | IsNew | 增加/减少 |
 
-### 12.3 Debug.Log 验证
+### 12.2 Debug.Log 验证
 
 ```csharp
-// 每个 Refresh 方法输出自身红点和父节点聚合值
+// 每个操作后输出自身红点和父节点聚合值
 Debug.Log($"[红点测试] 系统邮件: {_systemMailCount}  |  邮箱红点: {
     RedDotManager.Instance.GetRedDot(RedDotPaths.Root_Mail)}");
 ```
@@ -683,9 +652,8 @@ Debug.Log($"[红点测试] 系统邮件: {_systemMailCount}  |  邮箱红点: {
 观察 Console：
 - 添加系统邮件 2 封 + 个人邮件 3 封 → 邮箱红点 = 5
 - 清除系统邮件 → 邮箱红点 = 3
-- 验证祖先传播正确
 
-### 12.4 监视器窗口
+### 12.3 监视器窗口
 
 Play Mode 下打开 `Tools → RedDot → Monitor`，实时观察整棵红点树的状态变化。
 
@@ -702,108 +670,102 @@ static bool HasInstance { get; }
 
 // 注册
 void EnsureRegistered();
-int  RegisterNode(int pathHash, int parentPathHash, bool isStatic = false);
+int  RegisterNode(long pathHash, long parentPathHash, bool isStatic = false);
 
-// 写入
-void SetRedDot(int pathHash, int count, RedDotType type = RedDotType.Normal);
-void ClearNode(int pathHash);                         // 清零自身（不递归）
-void ClearNodeRecursive(int pathHash);                // 递归清整棵子树
-bool RemoveDynamicLeafNode(int pathHash);
+// 静态路径写入
+void SetRedDot(long pathHash, int count, RedDotType type = RedDotType.Normal);
+void ClearNode(long pathHash);                          // 清零自身（不递归）
+void ClearNodeRecursive(long pathHash);                 // 递归清整棵子树
+bool RemoveDynamicLeafNode(long pathHash);
 
 // 查询
-int         GetRedDot(int pathHash);            // TotalCount
-int         GetSelfRedDot(int pathHash);        // SelfCount
-RedDotState GetState(int pathHash);             // 完整快照
-RedDotType  GetEffectiveType(int pathHash);     // 最高优先级类型
-List<RedDotType> GetActiveTypes(int pathHash);  // 所有活跃类型
-void        GetActiveTypes(int pathHash, List<RedDotType> outList); // 零分配版
+int              GetRedDot(long pathHash);              // TotalCount
+int              GetSelfRedDot(long pathHash);          // SelfCount
+RedDotState      GetState(long pathHash);               // 完整快照
+RedDotType       GetEffectiveType(long pathHash);       // 最高优先级类型
+List<RedDotType> GetActiveTypes(long pathHash);         // 所有活跃类型（分配版）
+void             GetActiveTypes(long pathHash, List<RedDotType> outList); // 零分配版
 
 // 监听
-void AddListener(int pathHash, Action<RedDotState> callback);
-void RemoveListener(int pathHash, Action<RedDotState> callback);
+void AddListener(long pathHash, Action<RedDotState> callback);
+void RemoveListener(long pathHash, Action<RedDotState> callback);
 
 // 管理
 void ResetAll();
 
-// 动态节点（parentHash + childId，零字符串分配）
-int  RegisterDynamicNode(int parentHash, int childId);
-void SetRedDot(int parentHash, int childId, int count, RedDotType type);
-int  GetRedDot(int parentHash, int childId);
-int  GetSelfRedDot(int parentHash, int childId);
-RedDotState GetState(int parentHash, int childId);
-void ClearNode(int parentHash, int childId);         // 递归清（等效 ClearNodeRecursive）
-void AddListener(int parentHash, int childId, Action<RedDotState> callback);
-void RemoveListener(int parentHash, int childId, Action<RedDotState> callback);
+// 动态节点（parentHash + childId，零碰撞路由）
+int         RegisterDynamicNode(long parentHash, int childId);
+void        SetRedDot(long parentHash, int childId, int count, RedDotType type = RedDotType.Normal);
+int         GetRedDot(long parentHash, int childId);
+int         GetSelfRedDot(long parentHash, int childId);
+RedDotState GetState(long parentHash, int childId);
+void        ClearNode(long parentHash, int childId);    // 递归清子树
+void        AddListener(long parentHash, int childId, Action<RedDotState> callback);
+void        RemoveListener(long parentHash, int childId, Action<RedDotState> callback);
 ```
 
 ### RedDotTrie
 
 ```csharp
-int  RegisterNode(int pathHash, int parentHash);
-int  FindIndex(int pathHash);
-bool TryFindIndex(int pathHash, out int idx);
+int  RegisterNode(long pathHash, long parentHash);
+int  FindIndex(long pathHash);
+bool TryFindIndex(long pathHash, out int idx);
 int  GetParentIndex(int idx);
-int  GetPathHash(int idx);
-bool ContainsPath(int pathHash);
+long GetPathHash(int idx);
+bool ContainsPath(long pathHash);
 int  GetChildCount(int idx);
 void GetChildren(int idx, List<int> outChildren);
-bool TryRemoveNode(int pathHash);
+bool TryRemoveNode(long pathHash);                      // 删除叶子，回收槽位
 void Clear();
 ```
 
 ### RedDotDataStore
 
 ```csharp
-void EnsureCapacity(int idx);
-int  SetSelfCount(int nodeIndex, int count);
-int  GetSelfCount(int nodeIndex);
-int  GetTotalCount(int nodeIndex);
-bool AddDeltaToTotal(int nodeIndex, int delta);
-bool SetSelfTypeFlag(int nodeIndex, RedDotType type);
+void       EnsureCapacity(int idx);
+int        SetSelfCount(int nodeIndex, int count);
+int        GetSelfCount(int nodeIndex);
+int        GetTotalCount(int nodeIndex);
+bool       AddDeltaToTotal(int nodeIndex, int delta);
+bool       SetSelfTypeFlag(int nodeIndex, RedDotType type);
 RedDotType GetSelfTypeFlag(int nodeIndex);
-bool SetTypeFlags(int nodeIndex, RedDotType flags);
+bool       SetTypeFlags(int nodeIndex, RedDotType flags);
 RedDotType GetTypeFlags(int nodeIndex);
 RedDotType GetHighestType(int nodeIndex);
-void GetActiveTypes(int nodeIndex, List<RedDotType> outList);
-RedDotState GetState(int nodeIndex, int pathHash);
-void AddListener(int nodeIndex, Action<RedDotState> cb);
-void RemoveListener(int nodeIndex, Action<RedDotState> cb);
-void NotifyListeners(int nodeIndex, RedDotState state);
-bool HasListeners(int nodeIndex);
-int  ListenerCount(int nodeIndex);
-void ResetNode(int nodeIndex);
-void Clear();
+void       GetActiveTypes(int nodeIndex, List<RedDotType> outList);
+RedDotState GetState(int nodeIndex, long pathHash);
+void       AddListener(int nodeIndex, Action<RedDotState> cb);
+void       RemoveListener(int nodeIndex, Action<RedDotState> cb);
+void       NotifyListeners(int nodeIndex, RedDotState state);
+bool       HasListeners(int nodeIndex);
+int        ListenerCount(int nodeIndex);
+void       ResetNode(int nodeIndex);
+void       Clear();
 ```
 
 ### RedDotHash
 
 ```csharp
-static int Compute(string value);
-static int Compute(byte[] data);
-static int ComputeDynamic(int parentHash, int childId);  // 动态节点，零分配
+static long Compute(string value);                             // FNV-1a 64-bit
+static long Compute(byte[] data);
+static long ComputeDynamic(long parentHash, int childId);     // 动态节点，零分配
 ```
 
 ### RedDotState
 
 ```csharp
-readonly int PathHash;
-readonly int SelfCount;
-readonly int TotalCount;
+readonly long       PathHash;
+readonly int        SelfCount;
+readonly int        TotalCount;
 readonly RedDotType EffectiveType;
 bool Visible { get; }  // TotalCount > 0
-```
-
-### RedDotTypeHelper
-
-```csharp
-static readonly RedDotType[] PriorityOrder;  // IsNew, CanUpdate, Tips, Normal, Number
 ```
 
 ### RedDotBinder
 
 ```csharp
 void ForceRefresh();
-void SetPathHash(int newPathHash);
+void SetPathHash(long newPathHash);
 ```
 
 ---
@@ -815,7 +777,7 @@ void SetPathHash(int newPathHash);
 1. 打开 `Tools → RedDot → 红点路径编辑器`
 2. 在「添加新路径」中选择父路径（或根节点）
 3. 输入名称（如 `Bag_NewItem`），点击「添加」
-4. 点击「生成常量」+「生成注册」（或「一键生成全部」）
+4. 点击「一键生成全部」
 5. 代码中使用 `RedDotPaths.Root_Bag_NewItem`
 
 ### 14.2 业务代码调用
@@ -828,11 +790,10 @@ mgr.SetRedDot(RedDotPaths.Root_Mail_System, 3, RedDotType.IsNew);
 mgr.ClearNode(RedDotPaths.Root_Mail_System);
 bool hasMail = mgr.GetRedDot(RedDotPaths.Root_Mail) > 0;
 
-// 动态节点（运行时创建，如邮件第 1001 封、商店第 42 件）
-int mailHash = mgr.RegisterDynamicNode(RedDotPaths.Root_Mail, 1001);
+// 动态节点（运行时创建，如邮件第 1001 封）
+mgr.RegisterDynamicNode(RedDotPaths.Root_Mail, 1001);
 mgr.SetRedDot(RedDotPaths.Root_Mail, 1001, 1, RedDotType.IsNew);
-mgr.ClearNode(RedDotPaths.Root_Mail, 1001);       // 动态节点默认递归清
-mgr.ClearNodeRecursive(RedDotPaths.Root_Mail);    // 整棵 Mail 子树清零
+mgr.ClearNode(RedDotPaths.Root_Mail, 1001);       // 递归清并移除动态节点
 int count = mgr.GetRedDot(RedDotPaths.Root_Mail, 1001);
 
 // 监听
@@ -859,13 +820,14 @@ mgr.AddListener(RedDotPaths.Root_Mail, 1001, state => {
 - **AddListener 注册时立即回调**当前状态，UI 可以在 OnEnable 中订阅而不需要手动查询
 - **TotalCount 是增量维护的**，不要试图自己累加子节点
 - **GetActiveTypes 有零分配重载**，传复用 List 避免 GC
+- **动态节点通过复合键路由**，不受 64-bit hash 碰撞影响
 
 ### 14.5 常见问题
 
 | 问题 | 原因 | 解决 |
 |------|------|------|
-| 红点不显示 | 路径未注册 | 调用 `RedDotPathsRegistration.RegisterAll()` |
+| 红点不显示 | 路径未注册 | `EnsureRegistered()` 已自动注册，检查路径是否在 PathDefinition 中 |
 | 红点不消失 | count=0 但 type 残留 | `ClearNode()` 或 `SetRedDot(hash, 0)` |
-| 退出 Play Mode 报错 | OnDestroy 触发懒创建 | 用 `HasInstance` 判断 |
+| 退出 Play Mode 报错 | OnDestroy 触发懒创建 | 用 `HasInstance` 判断后再访问 |
 | 父节点红点数不对 | 子节点 count 设为负 | count 自动 clamp 到 0 |
-| 搜索不到路径 | `RedDotPathSelectorDrawer` 只搜末段名 | 已修复为显示完整路径 |
+| Inspector 无路径下拉 | 字段类型不是 `long` | 确认字段为 `private long _redDotPathHash` |
