@@ -14,43 +14,43 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   Paths:
   - Path: Root
-    Hash: 928436523
+    Hash: -4520621640764326645
     Comment: "\u6839\u8282\u70B9"
   - Path: Root_Bag
-    Hash: -391244072
+    Hash: -6790441972563631752
     Comment: "\u80CC\u5305"
   - Path: Root_Mail
-    Hash: 2040492965
+    Hash: 7084222147643159685
     Comment: "\u90AE\u7BB1"
   - Path: Root_Shop
-    Hash: 559988688
+    Hash: 3347282407859211632
     Comment: "\u5546\u57CE"
   - Path: Root_Shop_Lottery
-    Hash: 593984690
+    Hash: 1527902777971094738
     Comment: "\u62BD\u5956"
   - Path: Root_Shop_Lottery_Adv
-    Hash: -1836577162
+    Hash: 1584768126345639766
     Comment: "\u5E7F\u544A\u62BD\u5956"
   - Path: Root_Shop_Lottery_Free
-    Hash: -551602871
+    Hash: 3189299406656055593
     Comment: "\u514D\u8D39\u62BD\u5956"
   - Path: Root_Role
-    Hash: -221696304
+    Hash: -8164662867804498192
     Comment: "\u89D2\u8272"
   - Path: Root_Role_Upgrade
-    Hash: 649484015
+    Hash: 1734626051040352015
     Comment: "\u89D2\u8272\u5347\u7EA7"
   - Path: Root_Role_AttrPoint
-    Hash: 964748560
+    Hash: 7885072453061859824
     Comment: "\u89D2\u8272\u5C5E\u6027\u70B9"
   - Path: Root_Bag_ItemCount
-    Hash: -305445007
+    Hash: 4174489132683111121
     Comment: "\u7269\u54C1\u6570\u91CF"
   - Path: Root_Mail_System
-    Hash: -857877393
+    Hash: -7393231149571062129
     Comment: "\u7CFB\u7EDF\u90AE\u4EF6"
   - Path: Root_Mail_Person
-    Hash: 1794171343
+    Hash: -4252320899347976209
     Comment: "\u4E2A\u4EBA\u90AE\u4EF6"
   ClassName: RedDotPaths
   Namespace: RedDot
