@@ -13,7 +13,7 @@ namespace RedDot
         [SerializeField]
         [RedDotPathSelector]
         [Tooltip("从 RedDotPaths 常量中选择红点路径")]
-        private long _redDotPathHash;
+        private int _redDotPathHash;
 
         [SerializeField]
         [Tooltip("超过此数量显示 \"99+\"")]
@@ -128,13 +128,13 @@ namespace RedDot
             Refresh(state);
         }
 
-        public void SetPathHash(long newPathHash)
+        public void SetPathId(int newPathId)
         {
-            if (newPathHash == _redDotPathHash)
+            if (newPathId == _redDotPathHash)
                 return;
 
             UnBindListener();
-            _redDotPathHash = newPathHash;
+            _redDotPathHash = newPathId;
             ClearData();
 
             if (isActiveAndEnabled)

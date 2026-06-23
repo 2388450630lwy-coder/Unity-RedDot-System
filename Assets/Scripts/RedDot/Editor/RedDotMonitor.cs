@@ -10,7 +10,7 @@ namespace RedDot.Editor
         {
             public string Name;
             public string FullPath;
-            public long PathHash;
+            public int PathId;
             public int Depth;
             public int SelfCount;
             public int TotalCount;
@@ -31,7 +31,7 @@ namespace RedDot.Editor
         private int _activeNodeCount;
 
         private RedDotPathDefinition _pathDefinition;
-        private Dictionary<long, string> _hashToDisplayName = new Dictionary<long, string>();
+        private Dictionary<int, string> _idToDisplayName = new Dictionary<int, string>();
         private HashSet<string> _collapsedPaths = new HashSet<string>();
 
         private static readonly Color ColorActive = new Color(0.9f, 0.2f, 0.2f);
@@ -269,14 +269,14 @@ namespace RedDot.Editor
             }
             if (_pathDefinition == null) return;
 
-            _hashToDisplayName.Clear();
+            _idToDisplayName.Clear();
             foreach (var entry in _pathDefinition.Paths)
             {
                 int lastUnderscoreIndex = entry.Path.LastIndexOf('_');
                 string shortName = lastUnderscoreIndex >= 0
                     ? entry.Path.Substring(lastUnderscoreIndex + 1)
                     : entry.Path;
-                _hashToDisplayName[entry.Hash] = shortName;
+                _idToDisplayName[entry.StableId] = shortName;
             }
         }
 
@@ -290,14 +290,14 @@ namespace RedDot.Editor
             _activeNodeCount = 0;
             _treeRoot = new TreeNode { Name = "Root", FullPath = "", Depth = -1 };
 
-            Dictionary<long, TreeNode> nodeMap = new Dictionary<long, TreeNode>();
+            Dictionary<int, TreeNode> nodeMap = new Dictionary<int, TreeNode>();
 
             for (int nodeIndex = 1; nodeIndex < trie.NodeCount; nodeIndex++)
             {
-                long pathHash = trie.GetPathHash(nodeIndex);
+                int pathId = trie.GetPathId(nodeIndex);
 
-                string fullPath = _hashToDisplayName.TryGetValue(pathHash, out string fullName)
-                    ? fullName : $"0x{pathHash:X16}";
+                string fullPath = _idToDisplayName.TryGetValue(pathId, out string fullName)
+                    ? fullName : $"#{pathId}";
 
                 string displayName        = fullPath;
                 int    lastUnderscoreIndex = displayName.LastIndexOf('_');
@@ -307,11 +307,11 @@ namespace RedDot.Editor
                 int totalCount = dataStore.GetTotalCount(nodeIndex);
                 if (totalCount > 0) _activeNodeCount++;
 
-                nodeMap[pathHash] = new TreeNode
+                nodeMap[pathId] = new TreeNode
                 {
                     Name          = displayName,
                     FullPath      = fullPath,
-                    PathHash      = pathHash,
+                    PathId        = pathId,
                     Depth         = CalculateDepth(trie, nodeIndex),
                     SelfCount     = dataStore.GetSelfCount(nodeIndex),
                     TotalCount    = totalCount,
@@ -324,14 +324,14 @@ namespace RedDot.Editor
             // Build parent-child links
             foreach (var pair in nodeMap)
             {
-                int  nodeIndex     = trie.FindIndex(pair.Key);
-                int  parentIndex   = trie.GetParentIndex(nodeIndex);
-                long parentPathHash = parentIndex != RedDotTrie.INVALID_INDEX ? trie.GetPathHash(parentIndex) : 0L;
+                int  nodeIndex   = trie.FindIndex(pair.Key);
+                int  parentIndex = trie.GetParentIndex(nodeIndex);
+                int parentId    = parentIndex != RedDotTrie.INVALID_INDEX ? trie.GetPathId(parentIndex) : 0;
 
-                if (parentPathHash == 0L || !nodeMap.ContainsKey(parentPathHash))
+                if (parentId == 0 || !nodeMap.ContainsKey(parentId))
                     _treeRoot.Children.Add(pair.Value);
                 else
-                    nodeMap[parentPathHash].Children.Add(pair.Value);
+                    nodeMap[parentId].Children.Add(pair.Value);
             }
         }
 

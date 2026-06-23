@@ -168,13 +168,13 @@ namespace RedDot
             }
         }
 
-        public RedDotState GetState(int nodeIndex, long pathHash)
+        public RedDotState GetState(int nodeIndex, int pathId)
         {
             if (nodeIndex < 0 || nodeIndex >= _capacity)
-                return new RedDotState(pathHash, 0, 0, 0);
+                return new RedDotState(pathId, 0, 0, 0);
 
             return new RedDotState(
-                pathHash,
+                pathId,
                 _selfCounts[nodeIndex],
                 _totalCounts[nodeIndex],
                 GetHighestType(nodeIndex));

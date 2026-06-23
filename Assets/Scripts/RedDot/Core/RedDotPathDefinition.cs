@@ -10,23 +10,25 @@ namespace RedDot
     [Serializable]
     public struct RedDotPathEntry
     {
-        /// <summary>路径字符串，如 "MainUI/Bag/Item"</summary>
-        [Tooltip("路径字符串，用 / 分隔层级")]
+        /// <summary>路径字符串，如 "Root_Bag_Item"</summary>
+        [Tooltip("路径字符串，用 _ 分隔层级")]
         public string Path;
 
-        /// <summary>路径的 64-bit hash 值（由编辑器工具自动生成）</summary>
-        [Tooltip("自动生成的 hash 值（FNV-1a 64-bit）")]
-        public long Hash;
+        /// <summary>
+        /// 稳定递增 ID，由编辑器分配一次后永不变更（即使路径重命名也保持不变）。
+        /// 运行时以此值作为节点唯一键。
+        /// </summary>
+        [Tooltip("编辑器分配的稳定递增 ID，运行时唯一键")]
+        public int StableId;
 
-        /// <summary>注释说明</summary>
         [Tooltip("路径说明")]
         public string Comment;
 
-        public RedDotPathEntry(string path, long hash, string comment = "")
+        public RedDotPathEntry(string path, int stableId, string comment = "")
         {
-            Path    = path;
-            Hash    = hash;
-            Comment = comment;
+            Path     = path;
+            StableId = stableId;
+            Comment  = comment;
         }
     }
 
@@ -44,27 +46,26 @@ namespace RedDot
         menuName = "RedDot/Path Definition")]
     public class RedDotPathDefinition : ScriptableObject
     {
-        /// <summary>路径条目列表</summary>
         [Tooltip("所有红点路径定义")]
         public List<RedDotPathEntry> Paths = new List<RedDotPathEntry>();
 
-        /// <summary>生成的常量类名</summary>
+        /// <summary>
+        /// 下一个可用的 StableId，序列化到 SO，只增不减，确保已删除路径的 ID 不被复用。
+        /// </summary>
+        [Tooltip("下一个可分配的 StableId（自动维护，请勿手动修改）")]
+        public int NextStableId = 1;
+
         [Tooltip("生成的常量类名")]
         public string ClassName = "RedDotPaths";
 
-        /// <summary>生成的常量的命名空间</summary>
         [Tooltip("生成的常量命名空间")]
         public string Namespace = "RedDot";
 
-        /// <summary>生成的脚本输出路径（相对于 Assets/）</summary>
         [Tooltip("输出路径（相对于 Assets/）")]
         public string OutputPath = "Scripts/RedDot/Generated/RedDotPaths.cs";
 
-        /// <summary>注册代码输出路径</summary>
         [Tooltip("注册代码输出路径（相对于 Assets/）")]
         public string RegistrationOutputPath = "Scripts/RedDot/Generated/RedDotPathRegistration.cs";
-
-        // ==================== 工具 ====================
 
         /// <summary>
         /// 规范化路径分隔符：运行时和生成代码统一使用 _ 作为层级分隔符。
@@ -76,79 +77,73 @@ namespace RedDot
                 : path.Trim().Replace('/', '_');
         }
 
-        // ==================== 编辑时计算 ====================
-
         /// <summary>
-        /// 为所有路径重新计算 hash 值（编辑器工具调用）
+        /// 强制从 1 开始对所有路径重新分配 StableId（按当前列表顺序）。
+        /// 此操作会使所有旧 ID 失效，需重新生成代码并更新场景/Prefab 中的序列化引用。
         /// </summary>
-        public void RecalculateHashes()
+        public void RegenerateAllIds()
         {
-            // 使用 for 而非 foreach：Mono 的 List<T> setter 会递增内部版本号，
-            // 导致 foreach 枚举器抛出 InvalidOperationException
+            NextStableId = 1;
             for (int i = 0; i < Paths.Count; i++)
             {
                 var entry = Paths[i];
-                // 规范化 / → _ 保证一致性
-                string normalizedPath = NormalizePath(entry.Path);
-                long hash = RedDotHash.Compute(normalizedPath);
-                Paths[i] = new RedDotPathEntry(normalizedPath, hash, entry.Comment);
+                Paths[i] = new RedDotPathEntry(NormalizePath(entry.Path), NextStableId++, entry.Comment);
             }
         }
 
         /// <summary>
-        /// 校验路径合法性
+        /// 为尚未分配 StableId（值为 0）的路径按序分配 ID。
+        /// 已有 ID 的路径保持不变，保证 ID 稳定性。
+        /// </summary>
+        public void AssignMissingIds()
+        {
+            for (int i = 0; i < Paths.Count; i++)
+            {
+                var entry = Paths[i];
+                string normalizedPath = NormalizePath(entry.Path);
+                if (entry.StableId != 0)
+                {
+                    if (normalizedPath != entry.Path)
+                        Paths[i] = new RedDotPathEntry(normalizedPath, entry.StableId, entry.Comment);
+                    continue;
+                }
+                Paths[i] = new RedDotPathEntry(normalizedPath, NextStableId++, entry.Comment);
+            }
+        }
+
+        /// <summary>
+        /// 校验路径合法性：检查路径唯一性、ID 分配情况、ID 唯一性及父路径完整性。
         /// </summary>
         public bool Validate(out List<string> errors)
         {
             errors = new List<string>();
-            var hashSet = new HashSet<long>();
+            var idSet   = new HashSet<int>();
             var pathSet = new HashSet<string>();
 
             for (int i = 0; i < Paths.Count; i++)
             {
                 var entry = Paths[i];
-
-                // 规范化路径
                 string normalizedPath = NormalizePath(entry.Path);
 
-                // 空路径检查
                 if (string.IsNullOrWhiteSpace(normalizedPath))
                 {
                     errors.Add($"Entry {i}: path is empty");
                     continue;
                 }
 
-                // 重复路径检查（用规范化路径）
                 if (!pathSet.Add(normalizedPath))
-                {
                     errors.Add($"Entry {i}: duplicate path '{normalizedPath}'");
-                }
 
-                // hash 陈旧检查（hash 与路径字符串不一致，需重算）
-                long expectedHash = RedDotHash.Compute(normalizedPath);
-                if (entry.Hash != expectedHash)
-                {
-                    errors.Add($"Entry {i}: stale hash for path '{normalizedPath}' (stored=0x{entry.Hash:X16}, expected=0x{expectedHash:X16})");
-                }
+                if (entry.StableId <= 0)
+                    errors.Add($"Entry {i}: path '{normalizedPath}' 未分配 StableId（请点击「分配 ID」）");
+                else if (!idSet.Add(entry.StableId))
+                    errors.Add($"Entry {i}: duplicate StableId {entry.StableId} on path '{normalizedPath}'");
 
-                if (expectedHash == 0L)
-                {
-                    errors.Add($"Entry {i}: hash for path '{normalizedPath}' is reserved zero");
-                }
-
-                if (!hashSet.Add(expectedHash))
-                {
-                    errors.Add($"Entry {i}: hash collision for path '{normalizedPath}' (hash=0x{expectedHash:X16})");
-                }
-
-                // 空段检查
                 var segments = normalizedPath.Split('_');
                 for (int j = 0; j < segments.Length; j++)
                 {
                     if (string.IsNullOrEmpty(segments[j]))
-                    {
                         errors.Add($"Entry {i}: empty segment at position {j} in path '{normalizedPath}'");
-                    }
                 }
             }
 
@@ -160,9 +155,7 @@ namespace RedDot
 
                 string parentPath = normalizedPath.Substring(0, lastSep);
                 if (!pathSet.Contains(parentPath))
-                {
                     errors.Add($"Entry {i}: missing parent path '{parentPath}' for '{normalizedPath}'");
-                }
             }
 
             return errors.Count == 0;

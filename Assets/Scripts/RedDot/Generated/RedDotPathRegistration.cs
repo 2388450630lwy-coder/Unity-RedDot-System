@@ -1,5 +1,5 @@
 ﻿// AUTO-GENERATED
-// 2026-06-18 00:01
+// 2026-06-23 23:09
 
 namespace RedDot
 {
@@ -7,7 +7,7 @@ namespace RedDot
     {
         public static void RegisterAll() { RegisterAll(RedDotManager.Instance); }
         public static void RegisterAll(RedDotManager mgr) { if (mgr == null) return;
-            mgr.RegisterNode(RedDotPaths.Root, 0L, true);
+            mgr.RegisterNode(RedDotPaths.Root, 0, true);
             mgr.RegisterNode(RedDotPaths.Root_Bag, RedDotPaths.Root, true);
             mgr.RegisterNode(RedDotPaths.Root_Mail, RedDotPaths.Root, true);
             mgr.RegisterNode(RedDotPaths.Root_Role, RedDotPaths.Root, true);
@@ -20,6 +20,7 @@ namespace RedDot
             mgr.RegisterNode(RedDotPaths.Root_Shop_Lottery, RedDotPaths.Root_Shop, true);
             mgr.RegisterNode(RedDotPaths.Root_Shop_Lottery_Adv, RedDotPaths.Root_Shop_Lottery, true);
             mgr.RegisterNode(RedDotPaths.Root_Shop_Lottery_Free, RedDotPaths.Root_Shop_Lottery, true);
+            mgr.RegisterNode(RedDotPaths.Root_Shop_Lottery_Once, RedDotPaths.Root_Shop_Lottery, true);
         }
     }
 }

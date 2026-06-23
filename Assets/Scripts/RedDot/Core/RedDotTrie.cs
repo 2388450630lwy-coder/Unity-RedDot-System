@@ -3,22 +3,18 @@ using UnityEngine;
 
 namespace RedDot
 {
-    /// <summary>
-    /// 前缀树路由层 —— 运行时零字符串操作，所有 hash 由编辑器预计算。
-    /// 使用 FNV-1a 64-bit hash 作为节点键，碰撞概率可忽略不计。
-    /// </summary>
     public class RedDotTrie
     {
         private struct TrieNode
         {
-            public int                    ParentIndex;
-            public long                   PathHash;
-            public Dictionary<long, int>  Children;
+            public int                   ParentIndex;
+            public int                   PathId;
+            public Dictionary<int, int>  Children;
 
-            public TrieNode(int parentIndex, long pathHash)
+            public TrieNode(int parentIndex, int pathId)
             {
                 ParentIndex = parentIndex;
-                PathHash    = pathHash;
+                PathId      = pathId;
                 Children    = null;
             }
 
@@ -27,7 +23,7 @@ namespace RedDot
         }
 
         private List<TrieNode>         _nodes;
-        private Dictionary<long, int>  _pathToIndex;
+        private Dictionary<int, int>  _pathToIndex;
 
         private const int DEFAULT_CAPACITY = 1024;
 
@@ -38,21 +34,21 @@ namespace RedDot
         public RedDotTrie(int initialCapacity = DEFAULT_CAPACITY)
         {
             _nodes       = new List<TrieNode>(initialCapacity);
-            _pathToIndex = new Dictionary<long, int>(initialCapacity);
-            _nodes.Add(new TrieNode(INVALID_INDEX, 0L));
-            _pathToIndex[0L] = ROOT_INDEX;
+            _pathToIndex = new Dictionary<int, int>(initialCapacity);
+            _nodes.Add(new TrieNode(INVALID_INDEX, 0));
+            _pathToIndex[0] = ROOT_INDEX;
         }
 
-        public int RegisterNode(long pathHash, long parentHash)
+        public int RegisterNode(int pathId, int parentId)
         {
-            if (_pathToIndex.TryGetValue(pathHash, out int existing))
+            if (_pathToIndex.TryGetValue(pathId, out int existing))
                 return existing;
 
             int parentIndex;
-            if (!_pathToIndex.TryGetValue(parentHash, out parentIndex))
+            if (!_pathToIndex.TryGetValue(parentId, out parentIndex))
             {
-                if (parentHash != 0L)
-                    Debug.LogWarning($"[RedDotTrie] RegisterNode: parentHash=0x{parentHash:X16} not registered, attach pathHash=0x{pathHash:X16} to root");
+                if (parentId != 0)
+                    Debug.LogWarning($"[RedDotTrie] RegisterNode: parentId={parentId} not registered, attaching pathId={pathId} to root");
 
                 parentIndex = ROOT_INDEX;
             }
@@ -60,26 +56,26 @@ namespace RedDot
             TrieNode parent = _nodes[parentIndex];
             if (parent.Children == null)
             {
-                parent.Children = new Dictionary<long, int>();
+                parent.Children = new Dictionary<int, int>();
                 _nodes[parentIndex] = parent;
             }
 
             int newIndex = _nodes.Count;
-            _nodes.Add(new TrieNode(parentIndex, pathHash));
-            parent.Children[pathHash] = newIndex;
+            _nodes.Add(new TrieNode(parentIndex, pathId));
+            parent.Children[pathId] = newIndex;
             _nodes[parentIndex] = parent;
-            _pathToIndex[pathHash] = newIndex;
+            _pathToIndex[pathId] = newIndex;
             return newIndex;
         }
 
-        public int FindIndex(long pathHash)
+        public int FindIndex(int pathId)
         {
-            return _pathToIndex.TryGetValue(pathHash, out int i) ? i : INVALID_INDEX;
+            return _pathToIndex.TryGetValue(pathId, out int i) ? i : INVALID_INDEX;
         }
 
-        public bool TryFindIndex(long pathHash, out int idx)
+        public bool TryFindIndex(int pathId, out int idx)
         {
-            return _pathToIndex.TryGetValue(pathHash, out idx);
+            return _pathToIndex.TryGetValue(pathId, out idx);
         }
 
         public int GetParentIndex(int idx)
@@ -87,20 +83,20 @@ namespace RedDot
             return (idx < 0 || idx >= _nodes.Count) ? INVALID_INDEX : _nodes[idx].ParentIndex;
         }
 
-        public long GetPathHash(int idx)
+        public int GetPathId(int idx)
         {
             if (idx < 0 || idx >= _nodes.Count)
             {
                 Debug.Assert(idx >= 0 && idx < _nodes.Count,
-                    $"[RedDotTrie] GetPathHash: idx={idx} out of range [0, {_nodes.Count})");
-                return 0L;
+                    $"[RedDotTrie] GetPathId: idx={idx} out of range [0, {_nodes.Count})");
+                return 0;
             }
-            return _nodes[idx].PathHash;
+            return _nodes[idx].PathId;
         }
 
-        public bool ContainsPath(long pathHash)
+        public bool ContainsPath(int pathId)
         {
-            return _pathToIndex.ContainsKey(pathHash);
+            return _pathToIndex.ContainsKey(pathId);
         }
 
         public IEnumerable<int> GetAncestors(int idx)
@@ -160,9 +156,9 @@ namespace RedDot
                 yield return kv.Value;
         }
 
-        public bool TryRemoveNode(long pathHash)
+        public bool TryRemoveNode(int pathId)
         {
-            if (!_pathToIndex.TryGetValue(pathHash, out int idx))
+            if (!_pathToIndex.TryGetValue(pathId, out int idx))
                 return false;
 
             var node = _nodes[idx];
@@ -174,12 +170,12 @@ namespace RedDot
             if (pi != INVALID_INDEX)
             {
                 var p = _nodes[pi];
-                p.Children?.Remove(node.PathHash);
+                p.Children?.Remove(node.PathId);
                 _nodes[pi] = p;
             }
 
-            _pathToIndex.Remove(pathHash);
-            _nodes[idx] = new TrieNode(INVALID_INDEX, 0L);
+            _pathToIndex.Remove(pathId);
+            _nodes[idx] = new TrieNode(INVALID_INDEX, 0);
             return true;
         }
 
@@ -187,12 +183,12 @@ namespace RedDot
         {
             _nodes.Clear();
             _pathToIndex.Clear();
-            _nodes.Add(new TrieNode(INVALID_INDEX, 0L));
-            _pathToIndex[0L] = ROOT_INDEX;
+            _nodes.Add(new TrieNode(INVALID_INDEX, 0));
+            _pathToIndex[0] = ROOT_INDEX;
         }
 
-        /// <summary>按 hash 反向解析路径（仅编辑器调试用，会产生字符串分配）</summary>
-        public string GetFullPathByHash(int idx)
+        /// <summary>按 PathId 反向拼路径（仅编辑器调试用，会产生字符串分配）</summary>
+        public string GetFullPathById(int idx)
         {
             if (idx < 0 || idx >= _nodes.Count)
                 return "";
@@ -204,7 +200,7 @@ namespace RedDot
             int cur = idx;
             while (cur != ROOT_INDEX && cur != INVALID_INDEX)
             {
-                parts.Add($"0x{_nodes[cur].PathHash:X16}");
+                parts.Add(_nodes[cur].PathId.ToString());
                 cur = _nodes[cur].ParentIndex;
             }
 
@@ -226,7 +222,7 @@ namespace RedDot
 
             var n      = _nodes[idx];
             string indent = new string(' ', depth * 2);
-            string label  = n.IsRoot ? "Root" : $"0x{n.PathHash:X16}";
+            string label  = n.IsRoot ? "Root" : n.PathId.ToString();
             string info   = n.IsLeaf ? "[leaf]" : $"[{n.Children.Count} children]";
             Debug.Log($"{indent}├─ [{idx}] {label} p={n.ParentIndex} {info}");
 

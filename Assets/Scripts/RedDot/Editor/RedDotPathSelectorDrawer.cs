@@ -10,22 +10,21 @@ namespace RedDot.Editor
 {
     /// <summary>
     /// PropertyDrawer for [RedDotPathSelector] — 可搜索的路径下拉菜单。
-    /// 支持 long 序列化字段（FNV-1a 64-bit hash）。
+    /// 支持 long 序列化字段（StableId）。
     /// </summary>
     [CustomPropertyDrawer(typeof(RedDotPathSelectorAttribute))]
     public class RedDotPathSelectorDrawer : PropertyDrawer
     {
         public override void OnGUI(Rect position, SerializedProperty property, GUIContent label)
         {
-            // 支持 int（向后兼容）和 long 字段
             if (property.propertyType != SerializedPropertyType.Integer)
             {
                 EditorGUI.PropertyField(position, property, label);
                 return;
             }
 
-            long currentHash = property.longValue;
-            string currentLabel = GetLabel(currentHash);
+            int currentId = property.intValue;
+            string currentLabel = GetLabel(currentId);
 
             var labelRect = new Rect(position.x, position.y, EditorGUIUtility.labelWidth, position.height);
             var fieldRect = new Rect(position.x + EditorGUIUtility.labelWidth, position.y,
@@ -35,34 +34,34 @@ namespace RedDot.Editor
 
             if (EditorGUI.DropdownButton(fieldRect, new GUIContent(currentLabel), FocusType.Keyboard))
             {
-                var dropdown = new RedDotPathDropdown(new AdvancedDropdownState(), currentHash,
-                    selectedHash =>
+                var dropdown = new RedDotPathDropdown(new AdvancedDropdownState(), currentId,
+                    selectedId =>
                     {
-                        property.longValue = selectedHash;
+                        property.intValue = selectedId;
                         property.serializedObject.ApplyModifiedProperties();
                     });
                 dropdown.Show(fieldRect);
             }
         }
 
-        private static string GetLabel(long hash)
+        private static string GetLabel(int id)
         {
-            if (hash == 0L) return "— None —";
+            if (id == 0) return "— None —";
 
             Type type = FindRedDotPathsType();
             if (type != null)
             {
                 foreach (var field in type.GetFields(BindingFlags.Public | BindingFlags.Static))
                 {
-                    if (field.FieldType == typeof(long) && field.IsLiteral)
+                    if (field.FieldType == typeof(int) && field.IsLiteral)
                     {
-                        long h = (long)field.GetValue(null);
-                        if (h == hash) return field.Name;
+                        long v = (int)field.GetValue(null);
+                        if (v == id) return field.Name;
                     }
                 }
             }
 
-            return $"Unknown (0x{hash:X16})";
+            return $"Unknown (#{id})";
         }
 
         private static Type FindRedDotPathsType()
@@ -83,20 +82,20 @@ namespace RedDot.Editor
 
     /// <summary>
     /// 可搜索的红点路径下拉菜单（基于 AdvancedDropdown）。
-    /// AdvancedDropdownItem.id 只有 int 宽度，因此用列表索引作为 id，选中后再查 hash。
+    /// AdvancedDropdownItem.id 只有 int 宽度，因此用列表索引作为 id，选中后再查 StableId。
     /// </summary>
     internal class RedDotPathDropdown : AdvancedDropdown
     {
-        private readonly long           _currentHash;
-        private readonly Action<long>   _onSelected;
+        private readonly int            _currentId;
+        private readonly Action<int>    _onSelected;
         private          List<PathItem> _items;
 
-        public RedDotPathDropdown(AdvancedDropdownState state, long currentHash, Action<long> onSelected)
+        public RedDotPathDropdown(AdvancedDropdownState state, int currentId, Action<int> onSelected)
             : base(state)
         {
-            _currentHash = currentHash;
-            _onSelected  = onSelected;
-            minimumSize  = new Vector2(300, 400);
+            _currentId  = currentId;
+            _onSelected = onSelected;
+            minimumSize = new Vector2(300, 400);
         }
 
         protected override AdvancedDropdownItem BuildRoot()
@@ -105,7 +104,7 @@ namespace RedDot.Editor
             _items = new List<PathItem>();
 
             // 索引 0 保留给 None
-            _items.Add(new PathItem { Name = "— None —", Hash = 0L });
+            _items.Add(new PathItem { Name = "— None —", StableId = 0 });
             var none = new AdvancedDropdownItem("— None —") { id = 0 };
             root.AddChild(none);
 
@@ -119,8 +118,8 @@ namespace RedDot.Editor
             if (type == null) return root;
 
             var fields = type.GetFields(BindingFlags.Public | BindingFlags.Static)
-                .Where(f => f.FieldType == typeof(long) && f.IsLiteral)
-                .Select(f => new PathItem { Name = f.Name, Hash = (long)f.GetValue(null) })
+                .Where(f => f.FieldType == typeof(int) && f.IsLiteral)
+                .Select(f => new PathItem { Name = f.Name, StableId = (int)f.GetValue(null) })
                 .OrderBy(p => p.Name.Split('_').Length)
                 .ThenBy(p => p.Name)
                 .ToList();
@@ -144,14 +143,14 @@ namespace RedDot.Editor
                     parent = mid;
                 }
 
-                // 用列表索引作为 id，避免 long hash 超出 int 范围
+                // 用列表索引作为 id，避免 long StableId 超出 AdvancedDropdownItem.id 的 int 范围
                 int  itemIndex = _items.Count;
                 _items.Add(item);
 
                 string leafLabel = $"{parts[parts.Length - 1]}   ({item.Name})";
                 var leaf = new AdvancedDropdownItem(leafLabel) { id = itemIndex };
 
-                if (item.Hash == _currentHash)
+                if (item.StableId == _currentId)
                     leaf.enabled = false;
 
                 parent.AddChild(leaf);
@@ -163,13 +162,13 @@ namespace RedDot.Editor
         protected override void ItemSelected(AdvancedDropdownItem item)
         {
             if (item.id >= 0 && item.id < _items.Count)
-                _onSelected?.Invoke(_items[item.id].Hash);
+                _onSelected?.Invoke(_items[item.id].StableId);
         }
 
         private class PathItem
         {
             public string Name;
-            public long   Hash;
+            public int    StableId;
         }
     }
 }

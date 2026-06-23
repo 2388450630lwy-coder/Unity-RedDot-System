@@ -325,20 +325,20 @@ namespace RedDot.Editor
                 { _selectedPath = null; _addParent = ""; _root = null; MarkDirty(); Toast("已重命名 → " + newName); }
             }
 
-            // Hash（左侧与注释对齐）
+            // StableId（只读，显示稳定 ID）
             EditorGUILayout.BeginHorizontal();
             EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.TextField("Hash", $"0x{entry.Hash:X16}");
+            EditorGUILayout.TextField("StableId", entry.StableId.ToString());
             EditorGUI.EndDisabledGroup();
             if (GUILayout.Button("复制", EditorStyles.miniButton, GUILayout.Width(36)))
-            { EditorGUIUtility.systemCopyBuffer = entry.Hash.ToString(); Toast("Hash 已复制"); }
+            { EditorGUIUtility.systemCopyBuffer = entry.StableId.ToString(); Toast("StableId 已复制"); }
             EditorGUILayout.EndHorizontal();
 
             // 注释
             EditorGUI.BeginChangeCheck();
             string newComment = EditorGUILayout.TextField("注释", entry.Comment);
             if (EditorGUI.EndChangeCheck() && newComment != entry.Comment)
-            { Undo.RecordObject(_def, "编辑注释"); _def.Paths[node.Index] = new RedDotPathEntry(entry.Path, entry.Hash, newComment); MarkDirty(); }
+            { Undo.RecordObject(_def, "编辑注释"); _def.Paths[node.Index] = new RedDotPathEntry(entry.Path, entry.StableId, newComment); MarkDirty(); }
 
             EditorGUILayout.Space(4);
 
@@ -436,21 +436,10 @@ namespace RedDot.Editor
                     if (string.IsNullOrEmpty(p)) continue;
                     string full = string.IsNullOrEmpty(curParent) ? p : $"{curParent}_{p}";
 
-                    // 优先用路径字符串判断是否已存在，避免哈希碰撞时误判
                     if (_def.Paths.Any(x => x.Path == full)) { curParent = full; continue; }
 
-                    long hash = RedDotHash.Compute(full);
-
-                    // 检测哈希碰撞：不同路径产生了相同 hash
-                    int colIdx = _def.Paths.FindIndex(x => x.Hash == hash);
-                    if (colIdx >= 0)
-                    {
-                        Toast($"Hash 冲突！'{full}' 与 '{_def.Paths[colIdx].Path}' hash 相同 (0x{hash:X16})，已跳过");
-                        continue;
-                    }
-
                     string cmt = (i == parts.Length - 1) ? _addComment.Trim() : "";
-                    _def.Paths.Add(new RedDotPathEntry(full, hash, cmt));
+                    _def.Paths.Add(new RedDotPathEntry(full, _def.NextStableId++, cmt));
                     curParent = full; added++; firstNew ??= full;
                 }
             }
@@ -480,7 +469,21 @@ namespace RedDot.Editor
             GUILayout.Label("代码生成", _sectionLabel);
 
             EditorGUILayout.BeginHorizontal();
-            if (GUILayout.Button("重算 Hash", GUILayout.Height(22))) { _def.RecalculateHashes(); MarkDirty(); Toast("Hash 已重算"); }
+            if (GUILayout.Button("分配 ID", GUILayout.Height(22))) { _def.AssignMissingIds(); MarkDirty(); Toast("ID 已分配"); }
+            GUI.backgroundColor = new Color(1f, 0.55f, 0.2f);
+            if (GUILayout.Button("重新生成 ID", GUILayout.Height(22)))
+            {
+                if (EditorUtility.DisplayDialog("确认重新生成",
+                    "将从 1 开始对所有路径重新分配 StableId。\n\n旧 ID 全部失效，需重新生成代码并手动更新场景/Prefab 中的绑定。\n\n确定继续？",
+                    "重新生成", "取消"))
+                {
+                    Undo.RecordObject(_def, "重新生成 ID");
+                    _def.RegenerateAllIds();
+                    MarkDirty();
+                    Toast("ID 已从 1 重新生成");
+                }
+            }
+            GUI.backgroundColor = Color.white;
             if (GUILayout.Button("校验", GUILayout.Height(22)))
             {
                 if (_def.Validate(out var e)) EditorUtility.DisplayDialog("校验通过", $"全部 {_def.Paths.Count} 条有效。", "确定");
@@ -499,7 +502,7 @@ namespace RedDot.Editor
             {
                 string ap = AssetDatabase.GetAssetPath(_def);
                 if (!string.IsNullOrEmpty(ap)) _def = AssetDatabase.LoadAssetAtPath<RedDotPathDefinition>(ap);
-                _def.RecalculateHashes();
+                _def.AssignMissingIds();
                 if (!_def.Validate(out var e)) { EditorUtility.DisplayDialog("校验失败", string.Join("\n", e.Take(15)), "确定"); GUI.enabled = true; return; }
                 MarkDirty(); Gen(GenerateConstantsCode, _def.OutputPath, "常量"); Gen(GenerateRegistrationCode, _def.RegistrationOutputPath, "注册");
                 AssetDatabase.Refresh(); Toast("代码生成完毕");
@@ -527,21 +530,9 @@ namespace RedDot.Editor
                 string path = line.Trim(); if (string.IsNullOrEmpty(path)) continue;
                 path = path.Replace("/", "_").Replace(" ", "_");
 
-                // 优先用路径字符串判断是否已存在，避免哈希碰撞时误判
                 if (_def.Paths.Any(x => x.Path == path)) { skipped++; continue; }
 
-                long hash = RedDotHash.Compute(path);
-
-                // 检测哈希碰撞：不同路径产生了相同 hash
-                int colIdx = _def.Paths.FindIndex(x => x.Hash == hash);
-                if (colIdx >= 0)
-                {
-                    Debug.LogWarning($"[RedDotPathEditor] BatchImport Hash 冲突: '{path}' 与 '{_def.Paths[colIdx].Path}' 产生相同 hash (0x{hash:X16})，已跳过");
-                    skipped++;
-                    continue;
-                }
-
-                _def.Paths.Add(new RedDotPathEntry(path, hash, "")); added++;
+                _def.Paths.Add(new RedDotPathEntry(path, _def.NextStableId++, "")); added++;
             }
             MarkDirty(); _root = null;
             Toast($"导入 {added} 条新路径，跳过 {skipped} 条已存在");
@@ -566,12 +557,12 @@ namespace RedDot.Editor
             int sep = old.Path.LastIndexOf('_');
             string pp = sep >= 0 ? old.Path.Substring(0, sep) : "";
             string nf = string.IsNullOrEmpty(pp) ? newName : $"{pp}_{newName}";
-            long nh = RedDotHash.Compute(nf);
-            if (_def.Paths.Any(x => x.Hash == nh)) { EditorUtility.DisplayDialog("错误", $"路径已存在：{nf}", "确定"); return false; }
-            _def.Paths[node.Index] = new RedDotPathEntry(nf, nh, old.Comment);
+            if (_def.Paths.Any(x => x.Path == nf)) { EditorUtility.DisplayDialog("错误", $"路径已存在：{nf}", "确定"); return false; }
+            // StableId 在重命名时保持不变
+            _def.Paths[node.Index] = new RedDotPathEntry(nf, old.StableId, old.Comment);
             string op = old.Path + "_", np = nf + "_";
             for (int i = 0; i < _def.Paths.Count; i++)
-            { if (i == node.Index) continue; var p = _def.Paths[i]; if (p.Path.StartsWith(op)) _def.Paths[i] = new RedDotPathEntry(np + p.Path.Substring(op.Length), RedDotHash.Compute(np + p.Path.Substring(op.Length)), p.Comment); }
+            { if (i == node.Index) continue; var p = _def.Paths[i]; if (p.Path.StartsWith(op)) _def.Paths[i] = new RedDotPathEntry(np + p.Path.Substring(op.Length), p.StableId, p.Comment); }
             return true;
         }
 
@@ -583,7 +574,7 @@ namespace RedDot.Editor
             m.AddItem(new GUIContent("复制路径"), false, () => { EditorGUIUtility.systemCopyBuffer = node.FullPath; Toast("路径已复制"); });
             if (node.Index >= 0)
             {
-                m.AddItem(new GUIContent("复制 Hash"), false, () => { EditorGUIUtility.systemCopyBuffer = _def.Paths[node.Index].Hash.ToString(); Toast("Hash 已复制"); });
+                m.AddItem(new GUIContent("复制 StableId"), false, () => { EditorGUIUtility.systemCopyBuffer = _def.Paths[node.Index].StableId.ToString(); Toast("StableId 已复制"); });
                 m.AddItem(new GUIContent("复制 C# 常量名"), false, () => { EditorGUIUtility.systemCopyBuffer = $"{_def.ClassName}.{node.FullPath}"; Toast("已复制：" + _def.ClassName + "." + node.FullPath); });
             }
             m.AddSeparator("");
@@ -656,7 +647,7 @@ namespace RedDot.Editor
                 string cn = e.Path.Replace("-", "_").Replace(" ", "_");
                 if (!string.IsNullOrEmpty(e.Comment)) sb.AppendLine($"        /// <summary>{e.Comment}</summary>");
                 sb.AppendLine($"        /// <code>{e.Path}</code>");
-                sb.AppendLine($"        public const long {cn} = unchecked((long)0x{e.Hash:X16}UL);");
+                sb.AppendLine($"        public const int {cn} = {e.StableId};");
             }
             sb.AppendLine("    }"); if (!string.IsNullOrEmpty(_def.Namespace)) sb.AppendLine("}");
             return sb.ToString();
@@ -674,7 +665,7 @@ namespace RedDot.Editor
             foreach (var e in _def.Paths.OrderBy(p => DepthOf(p.Path)).ThenBy(p => p.Path))
             {
                 int sep = e.Path.LastIndexOf('_');
-                string pc = sep >= 0 ? $"{cn}.{e.Path.Substring(0, sep)}" : "0L";
+                string pc = sep >= 0 ? $"{cn}.{e.Path.Substring(0, sep)}" : "0";
                 sb.AppendLine($"            mgr.RegisterNode({cn}.{e.Path}, {pc}, true);");
             }
             sb.AppendLine("        }"); sb.AppendLine("    }");
