@@ -47,6 +47,10 @@ namespace RedDot
         private RedDotType _lastType;
         private bool _isBind;
 
+        private bool _isDynamic;
+        private long _dynamicParentHash;
+        private long _dynamicChildId;
+
         private void Awake()
         {
             _newRedDotObject = transform.Find("New")?.gameObject;
@@ -124,17 +128,45 @@ namespace RedDot
             _lastVisible = !_lastVisible;
             _lastCount = -1;
 
-            var state = RedDotManager.Instance.GetState(_redDotPathHash);
+            var state = _isDynamic
+                ? RedDotManager.Instance.GetState(_dynamicParentHash, _dynamicChildId)
+                : RedDotManager.Instance.GetState(_redDotPathHash);
             Refresh(state);
         }
 
         public void SetPathHash(long newPathHash)
         {
-            if (newPathHash == _redDotPathHash)
+            if (!_isDynamic && newPathHash == _redDotPathHash)
                 return;
 
             UnBindListener();
+            _isDynamic = false;
             _redDotPathHash = newPathHash;
+            _dynamicParentHash = 0;
+            _dynamicChildId = 0;
+            ClearData();
+
+            if (isActiveAndEnabled)
+                BindListener();
+        }
+
+        /// <summary>绑定动态子节点（int childId）</summary>
+        public void SetDynamicNode(long parentHash, int childId)
+        {
+            SetDynamicNode(parentHash, (long)childId);
+        }
+
+        /// <summary>绑定动态子节点（long childId）</summary>
+        public void SetDynamicNode(long parentHash, long childId)
+        {
+            if (_isDynamic && _dynamicParentHash == parentHash && _dynamicChildId == childId)
+                return;
+
+            UnBindListener();
+            _isDynamic = true;
+            _redDotPathHash = 0;
+            _dynamicParentHash = parentHash;
+            _dynamicChildId = childId;
             ClearData();
 
             if (isActiveAndEnabled)
@@ -153,7 +185,11 @@ namespace RedDot
             if (_isBind)
                 return;
 
-            RedDotManager.Instance.AddListener(_redDotPathHash, OnRedDotChanged);
+            if (_isDynamic)
+                RedDotManager.Instance.AddListener(_dynamicParentHash, _dynamicChildId, OnRedDotChanged);
+            else
+                RedDotManager.Instance.AddListener(_redDotPathHash, OnRedDotChanged);
+
             _isBind = true;
         }
 
@@ -163,7 +199,12 @@ namespace RedDot
                 return;
 
             if (RedDotManager.HasInstance)
-                RedDotManager.Instance.RemoveListener(_redDotPathHash, OnRedDotChanged);
+            {
+                if (_isDynamic)
+                    RedDotManager.Instance.RemoveListener(_dynamicParentHash, _dynamicChildId, OnRedDotChanged);
+                else
+                    RedDotManager.Instance.RemoveListener(_redDotPathHash, OnRedDotChanged);
+            }
             
             _isBind = false;
         }

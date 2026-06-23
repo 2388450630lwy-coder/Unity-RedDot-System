@@ -40,7 +40,7 @@ namespace RedDot.Editor
         private static readonly Color ColorRowOdd = new Color(0.25f, 0.25f, 0.25f);
         private static readonly Color ColorRowHighlight = new Color(0.35f, 0.10f, 0.10f);
 
-        [MenuItem("Tools/RedDot/Monitor")]
+        [MenuItem("Tools/RedDot/红点监控")]
         public static void ShowWindow()
         {
             var window = GetWindow<RedDotMonitor>("RedDot Monitor");

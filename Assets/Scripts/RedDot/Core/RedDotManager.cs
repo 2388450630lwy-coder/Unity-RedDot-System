@@ -163,9 +163,7 @@ namespace RedDot
             }
         }
 
-        // ══════════════════════════════════════════════════════════════════
-        //  静态路径公共 API（通过 long hash 路由）
-        // ══════════════════════════════════════════════════════════════════
+        #region 静态路径公共 API（通过 long hash 路由）
 
         /// <summary>设置静态节点的自身红点计数和类型。</summary>
         public void SetRedDot(long pathHash, int count, RedDotType type = RedDotType.Normal)
@@ -340,17 +338,9 @@ namespace RedDot
             _data.RemoveListener(nodeIndex, callback);
         }
 
-        // ══════════════════════════════════════════════════════════════════
-        //  动态节点 API（通过复合键 (parentHash, childId) 路由，零碰撞）
-        // ══════════════════════════════════════════════════════════════════
+        #endregion
 
-        // 动态节点 = 父节点 hash + 业务 ID（int 或 long），适用于运行时动态创建的红点，
-        // 如邮件第 N 封、背包第 N 格、活动第 N 期。
-        //
-        // 关键设计：所有动态 API 优先通过 _dynamicKeyToIndex[(parentHash, childId)]
-        // 查找 nodeIndex，而非通过 ComputeDynamic 产生的 long hash。
-        // 即使两个不同的 (parentHash, childId) 对恰好生成相同 hash，
-        // 复合键仍能精确路由，完全消除动态节点碰撞的影响。
+        #region 动态节点 API（通过复合键 (parentHash, childId) 路由，零碰撞）
 
         /// <summary>
         /// 通过复合键查找动态节点 nodeIndex。
@@ -407,32 +397,26 @@ namespace RedDot
             return nodeIndex;
         }
 
-        /// <summary>设置动态子节点红点。</summary>
+        /// <summary>设置动态子节点红点</summary>
         public void SetRedDot(long parentHash, int childId, int count, RedDotType type = RedDotType.Normal)
         {
             EnsureRegistered();
 
             int nodeIndex = FindDynamicIndex(parentHash, childId);
             if (nodeIndex == RedDotTrie.INVALID_INDEX)
-            {
-                Debug.LogWarning($"[RedDotManager] SetRedDot: dynamic node ({parentHash:X16}, {childId}) not registered");
-                return;
-            }
+                nodeIndex = RegisterDynamicNode(parentHash, childId);
 
             SetRedDotByIndex(nodeIndex, count, type);
         }
 
-        /// <summary>设置动态子节点红点（long childId）。</summary>
+        /// <summary>设置动态子节点红点（long childId）</summary>
         public void SetRedDot(long parentHash, long childId, int count, RedDotType type = RedDotType.Normal)
         {
             EnsureRegistered();
 
             int nodeIndex = FindDynamicIndex(parentHash, childId);
             if (nodeIndex == RedDotTrie.INVALID_INDEX)
-            {
-                Debug.LogWarning($"[RedDotManager] SetRedDot: dynamic node ({parentHash:X16}, {childId}) not registered");
-                return;
-            }
+                nodeIndex = RegisterDynamicNode(parentHash, childId);
 
             SetRedDotByIndex(nodeIndex, count, type);
         }
@@ -523,10 +507,7 @@ namespace RedDot
 
             int nodeIndex = FindDynamicIndex(parentHash, childId);
             if (nodeIndex == RedDotTrie.INVALID_INDEX)
-            {
-                Debug.LogWarning($"[RedDotManager] AddListener: dynamic node ({parentHash:X16}, {childId}) not registered");
-                return;
-            }
+                nodeIndex = RegisterDynamicNode(parentHash, childId);
 
             _data.AddListener(nodeIndex, callback);
 
@@ -549,10 +530,7 @@ namespace RedDot
 
             int nodeIndex = FindDynamicIndex(parentHash, childId);
             if (nodeIndex == RedDotTrie.INVALID_INDEX)
-            {
-                Debug.LogWarning($"[RedDotManager] AddListener: dynamic node ({parentHash:X16}, {childId}) not registered");
-                return;
-            }
+                nodeIndex = RegisterDynamicNode(parentHash, childId);
 
             _data.AddListener(nodeIndex, callback);
 
@@ -590,6 +568,8 @@ namespace RedDot
 
             _data.RemoveListener(nodeIndex, callback);
         }
+
+        #endregion
 
         // ══════════════════════════════════════════════════════════════════
         //  清理
