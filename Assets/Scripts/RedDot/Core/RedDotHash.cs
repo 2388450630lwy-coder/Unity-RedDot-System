@@ -46,7 +46,7 @@ namespace RedDot
         }
 
         /// <summary>
-        /// 动态节点：用父路径 hash + 业务 ID 计算子节点 hash，零字符串分配。
+        /// 动态节点：用父路径 hash + 业务 int ID 计算子节点 hash，零字符串分配。
         /// 如 ComputeDynamic(RedDotPaths.Root_Mail, 1001)。
         /// </summary>
         public static long ComputeDynamic(long parentHash, int childId)
@@ -67,6 +67,37 @@ namespace RedDot
             hash ^= (byte)((childId >> 8)  & 0xFF);  hash *= FNV64_PRIME;
             hash ^= (byte)((childId >> 16) & 0xFF);  hash *= FNV64_PRIME;
             hash ^= (byte)((childId >> 24) & 0xFF);  hash *= FNV64_PRIME;
+
+            return unchecked((long)hash);
+        }
+
+        /// <summary>
+        /// 动态节点：用父路径 hash + 业务 long ID 计算子节点 hash，零字符串分配。
+        /// 适用于超出 int 范围的 ID（如雪花 ID）。
+        /// </summary>
+        public static long ComputeDynamic(long parentHash, long childId)
+        {
+            ulong hash = FNV64_OFFSET_BASIS;
+            ulong ph   = unchecked((ulong)parentHash);
+            ulong cid  = unchecked((ulong)childId);
+
+            hash ^= (byte)(ph & 0xFF);          hash *= FNV64_PRIME;
+            hash ^= (byte)((ph >> 8)  & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((ph >> 16) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((ph >> 24) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((ph >> 32) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((ph >> 40) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((ph >> 48) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((ph >> 56) & 0xFF);  hash *= FNV64_PRIME;
+
+            hash ^= (byte)(cid & 0xFF);          hash *= FNV64_PRIME;
+            hash ^= (byte)((cid >> 8)  & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((cid >> 16) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((cid >> 24) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((cid >> 32) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((cid >> 40) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((cid >> 48) & 0xFF);  hash *= FNV64_PRIME;
+            hash ^= (byte)((cid >> 56) & 0xFF);  hash *= FNV64_PRIME;
 
             return unchecked((long)hash);
         }
